@@ -13,7 +13,7 @@ import asyncio
 import pytest
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture()
 def _fast_asyncio_sleep(monkeypatch):
     """Short-circuit asyncio.sleep to keep tests fast while still yielding the loop.
     """
