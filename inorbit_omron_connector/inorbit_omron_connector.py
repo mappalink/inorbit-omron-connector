@@ -2,102 +2,49 @@
 #
 # SPDX-License-Identifier: MIT
 
-"""Entry point for the InOrbit Omron Connector."""
+"""Entrypoint for the Omron ARCL InOrbit connector."""
 
-# Standard
 import argparse
 import logging
 import signal
 import sys
-from typing import NoReturn
 
-# InOrbit
-from inorbit_connector.utils import read_yaml
+from inorbit_omron_connector.src.connector import OmronArclConnector
+from inorbit_omron_connector.src.config.models import ConnectorConfig
+from inorbit_omron_connector.src.config.fleet_config_loader import get_robot_config
 
-# Local
-from inorbit_omron_connector import __version__
-from inorbit_omron_connector.src.config.models import OmronConnectorConfig
-from inorbit_omron_connector.src.connector import OmronConnector
-
-logging.basicConfig(level=logging.INFO)
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
-class CustomParser(argparse.ArgumentParser):
-    """Custom argument parser that shows help on error."""
-
-    def error(self, message: str) -> NoReturn:
-        """Handle parser errors by showing help.
-
-        Args:
-            message: Error message to display
-        """
-        sys.stderr.write(f"error: {message}\n")
-        self.print_help()
-        sys.exit(2)
-
-
-def start() -> None:
-    """Main entry point for the connector.
-
-    Parses command-line arguments, loads configuration, and starts the connector.
-    Handles graceful shutdown on SIGINT.
-    """
-    parser = CustomParser(
-        prog="inorbit-omron-connector",
-        description="InOrbit Omron Connector",
+def start():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
     )
+
+    parser = argparse.ArgumentParser(prog="inorbit-omron-connector")
+    parser.add_argument("-c", "--config", required=True, help="Fleet YAML path")
+    parser.add_argument("-id", "--robot_id", required=True, help="Robot ID from YAML")
     parser.add_argument(
-        "-c",
-        "--config",
-        type=str,
-        required=True,
-        help="Path to YAML configuration file",
+        "--log-level",
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Log level",
     )
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=f"%(prog)s {__version__}",
-    )
-
     args = parser.parse_args()
-    config_filename = args.config
+
+    logging.getLogger().setLevel(getattr(logging, args.log_level))
 
     try:
-        yaml_data = read_yaml(config_filename)
-        config = OmronConnectorConfig(**yaml_data)
-
-        robot_ids = [robot.robot_id for robot in config.fleet]
-        LOGGER.info(f"Configuration loaded for fleet of {len(robot_ids)} robots")
-        LOGGER.info(f"Robot IDs: {robot_ids}")
-
-    except FileNotFoundError:
-        LOGGER.error(f"Configuration file '{config_filename}' not found")
-        sys.exit(1)
-    except ValueError as e:
-        LOGGER.error(f"Configuration validation error: {e}")
+        config = ConnectorConfig(**get_robot_config(args.config, args.robot_id))
+    except Exception as e:
+        logger.error("Config error: %s", e)
         sys.exit(1)
 
-    # Create and start the fleet connector
-    connector = OmronConnector(config)
-    LOGGER.info("Starting Omron Connector...")
+    connector = OmronArclConnector(args.robot_id, config)
+    logger.info("Starting Omron ARCL connector for %s", args.robot_id)
     connector.start()
-
-    # Adjust the log level of certain libraries to reduce noise
-    level = logging.getLogger().getEffectiveLevel()
-    if level <= logging.DEBUG:
-        logging.getLogger("httpx").setLevel(logging.WARNING)
-        logging.getLogger("httpcore").setLevel(logging.INFO)
-        logging.getLogger("RobotSession").setLevel(logging.INFO)
-    elif level == logging.INFO:
-        logging.getLogger("httpx").setLevel(logging.WARNING)
-
-    # Register signal handler for graceful shutdown
-    signal.signal(signal.SIGINT, lambda sig, frame: connector.stop())
-
-    # Wait for the connector to finish
+    signal.signal(signal.SIGINT, lambda s, f: connector.stop())
+    signal.signal(signal.SIGTERM, lambda s, f: connector.stop())
     connector.join()
-
-
-if __name__ == "__main__":
-    start()

@@ -6,7 +6,7 @@
 
 from importlib import metadata
 
-__author__ = """InOrbit Inc."""
+__author__ = """Mappalink"""
 __email__ = "gerben@mappalink.com"
 # Read the installed package version from metadata
 try:

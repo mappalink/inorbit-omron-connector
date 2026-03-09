@@ -5,7 +5,7 @@
 [project]
 name = "inorbit-omron-connector"
 version = "0.1.0"
-description = "InOrbit Edge connector for Omron"
+description = "InOrbit Edge connector for Omron HD1500 AMRs via ARCL"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -15,7 +15,7 @@ authors = [
 maintainers = [
     { name = "Mappalink", email = "gerben@mappalink.com" },
 ]
-keywords = ["inorbit", "connector", "edge-connector", "robotics", "robops", "omron"]
+keywords = ["inorbit", "connector", "edge-connector", "robotics", "robops", "omron", "arcl"]
 classifiers = [
     "Topic :: Scientific/Engineering",
     "License :: OSI Approved :: MIT License",
@@ -23,8 +23,9 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
-    "inorbit-connector[system-stats]~=2.2.0", # TODO: Replace with the latest version from https://github.com/inorbit-ai/inorbit-connector-python
-    # Other runtime dependencies go here
+    "inorbit-connector[system-stats]~=2.2.0",
+    "pydantic>=2.11,<3",
+    "pydantic-settings>=2.11,<3",
 ]
 
 [project.urls]
@@ -35,7 +36,6 @@ Issues = "https://github.com/mappalink/inorbit-omron-connector/issues"
 
 [project.optional-dependencies]
 dev = [
-    # TODO: Make sure to replace with the latest version of the tools
     "coverage~=7.11",
     "pytest~=8.4",
     "pytest-asyncio~=1.2",

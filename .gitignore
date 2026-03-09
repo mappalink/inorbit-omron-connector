@@ -25,6 +25,7 @@ env/
 config/.env
 config/my_fleet.yaml
 config/*local*.yaml
+config/omron_map.png
 docker/docker-compose.yaml
 
 # Certificates
@@ -32,6 +33,10 @@ docker/docker-compose.yaml
 *.crt
 *.key
 *.csr
+
+# Claude Code
+CLAUDE.md
+.claude/
 
 # IDE
 .vscode/
@@ -51,4 +56,3 @@ Thumbs.db
 # InOrbit specific
 *.db
 *.sqlite
-

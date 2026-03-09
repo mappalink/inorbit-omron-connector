@@ -6,144 +6,79 @@
 
 from __future__ import annotations
 
-import copy
-
 import pytest
 
 from inorbit_omron_connector.src.config.models import (
-    OmronConfig,
-    OmronConnectorConfig,
-    OmronRobotConfig,
-    CONNECTOR_TYPE,
+    ConnectorConfig,
+    OmronArclConnectorConfig,
 )
 
 
-REQUIRED_FLEET_CONFIG = {
-    "fleet_host": "fleet.example.com",
-    "fleet_port": 8080,
-    "fleet_username": "test-user",
-    "fleet_password": "test-pass",
+MINIMAL_OMRON_CONFIG = {
+    "arcl_host": "10.200.0.2",
+    "arcl_password": "test-password",
 }
 
 
 @pytest.fixture()
 def base_config_data() -> dict:
-    """Return a minimal, valid OmronConnectorConfig payload."""
-
+    """Return a minimal, valid ConnectorConfig payload."""
     return {
-        "connector_type": "omron",
+        "connector_type": "OmronARCL",
         "connector_config": {
-            "fleet_host": "fleet.example.com",
-            "fleet_port": 8080,
-            "fleet_username": "dummy-user",
-            "fleet_password": "dummy-pass",
+            "arcl_host": "10.200.0.2",
+            "arcl_password": "test-password",
         },
-        "fleet": [
-            {"robot_id": "robot-alpha", "fleet_robot_id": 101, "cameras": []},
-            {"robot_id": "robot-beta", "fleet_robot_id": 102, "cameras": []},
-        ],
     }
 
 
-def test_connector_type_must_match(base_config_data: dict) -> None:
-    config = OmronConnectorConfig(**base_config_data)
-    assert config.connector_type == CONNECTOR_TYPE
+def test_valid_config_instantiates(base_config_data: dict) -> None:
+    config = ConnectorConfig(**base_config_data)
+    assert isinstance(config.connector_config, OmronArclConnectorConfig)
 
 
-def test_invalid_connector_type_raises(base_config_data: dict) -> None:
-    data = copy.deepcopy(base_config_data)
-    data["connector_type"] = f"not-{CONNECTOR_TYPE}"
-
-    with pytest.raises(ValueError, match=f"Expected connector type '{CONNECTOR_TYPE}'"):
-        OmronConnectorConfig(**data)
-
-
-def test_unique_fleet_robot_ids_are_required(base_config_data: dict) -> None:
-    data = copy.deepcopy(base_config_data)
-    data["fleet"][1]["fleet_robot_id"] = data["fleet"][0]["fleet_robot_id"]
-
-    with pytest.raises(ValueError, match="fleet_robot_id values must be unique"):
-        OmronConnectorConfig(**data)
+def test_arcl_defaults(base_config_data: dict) -> None:
+    config = ConnectorConfig(**base_config_data)
+    cfg = config.connector_config
+    assert cfg.arcl_port == 7171
+    assert cfg.arcl_timeout == 10
+    assert cfg.arcl_reconnect_interval == 5
+    assert cfg.poll_frequency == 1.0
+    assert cfg.map_id == "map"
+    assert cfg.map_file is None
+    assert cfg.laser_names == []
+    assert cfg.laser_n_points == 720
 
 
-def test_valid_config_instantiates_models(base_config_data: dict) -> None:
-    config = OmronConnectorConfig(**base_config_data)
-
-    assert isinstance(config.connector_config, OmronConfig)
-    assert all(isinstance(robot, OmronRobotConfig) for robot in config.fleet)
+def test_missing_arcl_host_raises() -> None:
+    with pytest.raises(Exception):
+        ConnectorConfig(connector_config={"arcl_password": "pw"})
 
 
-def test_omron_config_reads_from_environment_variables(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Test that OmronConfig reads missing fields from environment variables."""
-    monkeypatch.setenv("INORBIT_OMRON_FLEET_HOST", "env-fleet.example.com")
-    monkeypatch.setenv("INORBIT_OMRON_FLEET_PORT", "8443")
-    monkeypatch.setenv("INORBIT_OMRON_FLEET_USERNAME", "env-user")
-    monkeypatch.setenv("INORBIT_OMRON_FLEET_PASSWORD", "env-pass")
+def test_missing_arcl_password_raises() -> None:
+    with pytest.raises(Exception):
+        ConnectorConfig(connector_config={"arcl_host": "10.0.0.1"})
 
-    # All required fields come from environment variables
-    config = OmronConfig(
-        fleet_host="env-fleet.example.com",
-        fleet_username="env-user",
-        fleet_password="env-pass",
+
+def test_omron_config_reads_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that OmronArclConnectorConfig reads from INORBIT_OMRON_ env vars."""
+    monkeypatch.setenv("INORBIT_OMRON_ARCL_HOST", "env-host")
+    monkeypatch.setenv("INORBIT_OMRON_ARCL_PASSWORD", "env-pw")
+    monkeypatch.setenv("INORBIT_OMRON_ARCL_PORT", "7272")
+
+    config = OmronArclConnectorConfig(arcl_host="env-host", arcl_password="env-pw")
+    assert config.arcl_host == "env-host"
+    assert config.arcl_port == 7272
+
+
+def test_laser_config_override() -> None:
+    config = OmronArclConnectorConfig(
+        arcl_host="10.0.0.1",
+        arcl_password="pw",
+        laser_names=["Laser_1", "Laser_2"],
+        laser_n_points=360,
+        laser_range_max=20.0,
     )
-
-    assert config.fleet_host == "env-fleet.example.com"
-    assert config.fleet_port == 8443
-    assert config.fleet_username == "env-user"
-    assert config.fleet_password == "env-pass"
-
-
-def test_omron_config_prioritizes_yaml_over_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Test that YAML values take precedence over environment variables."""
-    monkeypatch.setenv("INORBIT_OMRON_FLEET_HOST", "env-fleet.example.com")
-    monkeypatch.setenv("INORBIT_OMRON_FLEET_PORT", "8443")
-    monkeypatch.setenv("INORBIT_OMRON_FLEET_USERNAME", "env-user")
-    monkeypatch.setenv("INORBIT_OMRON_FLEET_PASSWORD", "env-pass")
-
-    config = OmronConfig(
-        fleet_host="yaml-fleet.example.com",
-        fleet_port=8080,
-        fleet_username="yaml-user",
-        fleet_password="yaml-pass",
-    )
-
-    assert config.fleet_host == "yaml-fleet.example.com"
-    assert config.fleet_port == 8080
-    # YAML values take precedence
-    assert config.fleet_username == "yaml-user"
-    assert config.fleet_password == "yaml-pass"
-
-
-def test_omron_config_uses_env_for_missing_fields(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Test that environment variables fill in missing YAML fields."""
-    monkeypatch.setenv("INORBIT_OMRON_FLEET_USERNAME", "env-user")
-    monkeypatch.setenv("INORBIT_OMRON_FLEET_PASSWORD", "env-pass")
-
-    config = OmronConfig(
-        fleet_host="yaml-fleet.example.com",
-        fleet_port=8080,
-        fleet_username="env-user",
-        fleet_password="env-pass",
-    )
-
-    assert config.fleet_host == "yaml-fleet.example.com"
-    assert config.fleet_port == 8080
-    assert config.fleet_username == "env-user"
-    assert config.fleet_password == "env-pass"
-
-
-def test_omron_config_default_port() -> None:
-    """Test default value for fleet_port."""
-    config = OmronConfig(
-        fleet_host="fleet.example.com",
-        fleet_username="test-user",
-        fleet_password="test-pass",
-    )
-
-    assert config.fleet_port == 80
+    assert config.laser_names == ["Laser_1", "Laser_2"]
+    assert config.laser_n_points == 360
+    assert config.laser_range_max == 20.0

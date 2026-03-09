@@ -2,59 +2,34 @@
 #
 # SPDX-License-Identifier: MIT
 
-# Omron Connector Configuration
-# This file follows the inorbit-connector standard configuration format
+common:
+  location_tz: Europe/Amsterdam
+  connector_type: OmronARCL
+  connector_version: "0.1.0"
 
-# Timezone for the robot location (pytz timezone)
-location_tz: America/Los_Angeles
+  env_vars:
+    INORBIT_API_KEY: "${INORBIT_API_KEY}"
 
-# Logging configuration
-logging:
-  log_level: INFO
+  arcl_port: 7171
+  arcl_password: "${OMRON_ARCL_PASSWORD}"
+  poll_frequency: 1.0
 
-# Connector type identifier
-connector_type: omron
+  map_file: "/config/omron_map.png"
+  map_resolution: 0.02
+  map_origin_x: -4.46
+  map_origin_y: -8.94
 
-# Update frequency in Hz for the execution loop
-update_freq: 1.0
+  # Laser scanner names (empty = no laser publishing)
+  laser_names:
+    - "Laser_1"
+    - "Laser_2"
+    - "Laser_3"
+  # laser_angle_min: -3.14159  # -pi (full 360°)
+  # laser_angle_max: 3.14159   # +pi
+  # laser_range_max: 30.0      # meters
+  # laser_n_points: 720        # 360° at 0.5° resolution
 
-# Account ID for the InOrbit account. Required to set the robot footprint and for annotation synchronization.
-# account_id:
-
-# Omron-specific configuration
-# These fields are shared across all robots in the fleet
-# Please refer to the example.env file for storing these values in the environment instead,
-# specially for handling credentials securely.
-connector_config:
-  # TODO: Add Omron-specific configuration here
-
-# Fleet configuration - list of robots to manage
-# Each robot must specify:
-# - robot_id: InOrbit robot ID (string)
-# - fleet_robot_id: Omron robot ID (integer from GET /robots API)
-fleet:
-  - robot_id: omron-robot-1
-    fleet_robot_id: 1
-  
-  - robot_id: omron-robot-2
-    fleet_robot_id: 2
-  
-  - robot_id: omron-robot-3
-    fleet_robot_id: 3
-
-# Optional: Map configuration
-# maps:
-#   map_frame_id:
-#     file: ./map.png
-#     map_id: map1
-#     map_label: Facility Map
-#     origin_x: 0.0
-#     origin_y: 0.0
-#     resolution: 0.05
-
-# Optional: User scripts directory
-# user_scripts_dir: ./user_scripts
-
-# Optional: Environment variables for user scripts
-# env_vars:
-#   MY_VAR: value
+omron-hd1500:
+  robot_name: "Omron HD1500"
+  arcl_host: "10.200.0.2"
+  map_id: "map"
