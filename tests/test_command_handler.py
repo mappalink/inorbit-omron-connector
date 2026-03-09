@@ -12,6 +12,7 @@ import pytest
 
 from inorbit_connector.connector import CommandResultCode
 from inorbit_edge.robot import COMMAND_CUSTOM_COMMAND, COMMAND_MESSAGE, COMMAND_NAV_GOAL
+from inorbit_omron_connector.src.goal_tracker import GoalTracker
 
 
 @pytest.fixture
@@ -36,6 +37,7 @@ def connector():
         instance = object.__new__(OmronArclConnector)
         instance._arcl = mock_arcl
         instance._map_id = "test-map"
+        instance._goal_tracker = GoalTracker()
         instance._logger = MagicMock()
 
         yield instance
