@@ -66,7 +66,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: [SOME REGISTRY]/connectors/inorbit_omron_connector
+          images: "SOME_REGISTRY/connectors/inorbit_omron_connector"
           tags: |
             type=raw,value=latest
             type=raw,value=${{ env.OMRON_CONNECTOR_VERSION }}
@@ -93,6 +93,6 @@ jobs:
           body: |
             Release v${{ env.OMRON_CONNECTOR_VERSION }}
 
-            Docker image: `[SOME REGISTRY]/inorbit-integrations/connectors/inorbit_omron_connector:${{ env.OMRON_CONNECTOR_VERSION }}`
+            Docker image: `SOME_REGISTRY/inorbit-integrations/connectors/inorbit_omron_connector:${{ env.OMRON_CONNECTOR_VERSION }}`
           draft: false
           prerelease: false
