@@ -144,7 +144,18 @@ class OmronArclConnector(Connector):
 
     async def _connect(self) -> None:
         await self._arcl.connect()
-        await self._arcl.wait_for_connection(timeout=self._arcl.timeout)
+        # Wait for the ARCL connection manager to establish a connection.
+        # If the robot is offline, keep retrying instead of crashing.
+        while True:
+            try:
+                await self._arcl.wait_for_connection(timeout=self._arcl.timeout)
+                break
+            except TimeoutError:
+                logger.warning(
+                    "Robot at %s:%s not reachable yet, retrying...",
+                    self._arcl.host,
+                    self._arcl.port,
+                )
         logger.info("Connected to Omron ARCL at %s:%s", self._arcl.host, self._arcl.port)
 
     async def _disconnect(self) -> None:
