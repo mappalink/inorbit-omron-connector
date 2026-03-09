@@ -143,20 +143,20 @@ class OmronArclConnector(Connector):
     # -- Lifecycle ---------------------------------------------------------
 
     async def _connect(self) -> None:
+        # Start the ARCL connection manager (retries internally).
+        # Don't block waiting — the base class needs _connect() to return
+        # so it can initialize the InOrbit session. The execution loop
+        # already skips telemetry when ARCL is not connected.
         await self._arcl.connect()
-        # Wait for the ARCL connection manager to establish a connection.
-        # If the robot is offline, keep retrying instead of crashing.
-        while True:
-            try:
-                await self._arcl.wait_for_connection(timeout=self._arcl.timeout)
-                break
-            except TimeoutError:
-                logger.warning(
-                    "Robot at %s:%s not reachable yet, retrying...",
-                    self._arcl.host,
-                    self._arcl.port,
-                )
-        logger.info("Connected to Omron ARCL at %s:%s", self._arcl.host, self._arcl.port)
+        try:
+            await self._arcl.wait_for_connection(timeout=self._arcl.timeout)
+            logger.info("Connected to Omron ARCL at %s:%s", self._arcl.host, self._arcl.port)
+        except TimeoutError:
+            logger.warning(
+                "Robot at %s:%s not reachable yet, will keep retrying in background",
+                self._arcl.host,
+                self._arcl.port,
+            )
 
     async def _disconnect(self) -> None:
         await self._arcl.disconnect()
