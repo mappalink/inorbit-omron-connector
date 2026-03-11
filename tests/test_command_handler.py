@@ -18,9 +18,7 @@ from inorbit_omron_connector.src.goal_tracker import GoalTracker
 @pytest.fixture
 def connector():
     """Create an OmronArclConnector with a mocked ArclClient (no real TCP)."""
-    with patch(
-        "inorbit_omron_connector.src.connector.ArclClient"
-    ) as MockArclClient:
+    with patch("inorbit_omron_connector.src.connector.ArclClient") as MockArclClient:
         mock_arcl = MockArclClient.return_value
         mock_arcl.set_block_driving = AsyncMock()
         mock_arcl.clear_block_driving = AsyncMock()
@@ -97,9 +95,7 @@ class TestHandleMessage:
 class TestCommandRouting:
     @pytest.mark.asyncio
     async def test_routes_command_message(self, connector, options, result_fn):
-        await connector._inorbit_command_handler(
-            COMMAND_MESSAGE, ["inorbit_pause"], options
-        )
+        await connector._inorbit_command_handler(COMMAND_MESSAGE, ["inorbit_pause"], options)
 
         connector._arcl.set_block_driving.assert_awaited_once()
         result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
@@ -107,26 +103,20 @@ class TestCommandRouting:
     @pytest.mark.asyncio
     async def test_routes_nav_goal(self, connector, options, result_fn):
         pose = {"x": 5.0, "y": 3.0, "theta": 1.57}
-        await connector._inorbit_command_handler(
-            COMMAND_NAV_GOAL, [pose], options
-        )
+        await connector._inorbit_command_handler(COMMAND_NAV_GOAL, [pose], options)
 
         connector._arcl.gotopoint.assert_awaited_once()
         result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
 
     @pytest.mark.asyncio
     async def test_routes_custom_command(self, connector, options, result_fn):
-        await connector._inorbit_command_handler(
-            COMMAND_CUSTOM_COMMAND, ["dock", []], options
-        )
+        await connector._inorbit_command_handler(COMMAND_CUSTOM_COMMAND, ["dock", []], options)
 
         connector._arcl.dock.assert_awaited_once()
         result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
 
     @pytest.mark.asyncio
     async def test_unknown_command_returns_failure(self, connector, options, result_fn):
-        await connector._inorbit_command_handler(
-            "unknownCommand", ["something"], options
-        )
+        await connector._inorbit_command_handler("unknownCommand", ["something"], options)
 
         result_fn.assert_called_once_with(CommandResultCode.FAILURE)

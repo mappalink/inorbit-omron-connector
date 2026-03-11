@@ -276,8 +276,14 @@ class TestCartesianToRanges:
         # Robot at origin facing 0°, point at (1000, 0) mm → 0° angle, 1.0m
         points = [(1000.0, 0.0)]
         ranges = cartesian_to_ranges(
-            points, 0.0, 0.0, 0.0,
-            angle_min=-math.pi, angle_max=math.pi, n_points=360, range_max=30.0,
+            points,
+            0.0,
+            0.0,
+            0.0,
+            angle_min=-math.pi,
+            angle_max=math.pi,
+            n_points=360,
+            range_max=30.0,
         )
         mid = self._angle_to_bin(0, -math.pi, math.pi, 360)
         assert ranges[mid] == pytest.approx(1.0, abs=0.01)
@@ -288,8 +294,14 @@ class TestCartesianToRanges:
         from inorbit_omron_connector.src.connector import cartesian_to_ranges
 
         ranges = cartesian_to_ranges(
-            [], 0.0, 0.0, 0.0,
-            angle_min=-math.pi, angle_max=math.pi, n_points=100, range_max=30.0,
+            [],
+            0.0,
+            0.0,
+            0.0,
+            angle_min=-math.pi,
+            angle_max=math.pi,
+            n_points=100,
+            range_max=30.0,
         )
         assert all(r == math.inf for r in ranges)
         assert len(ranges) == 100
@@ -300,8 +312,14 @@ class TestCartesianToRanges:
         # Point at 50m, beyond range_max of 30m
         points = [(50000.0, 0.0)]
         ranges = cartesian_to_ranges(
-            points, 0.0, 0.0, 0.0,
-            angle_min=-math.pi, angle_max=math.pi, n_points=360, range_max=30.0,
+            points,
+            0.0,
+            0.0,
+            0.0,
+            angle_min=-math.pi,
+            angle_max=math.pi,
+            n_points=360,
+            range_max=30.0,
         )
         assert all(r == math.inf for r in ranges)
 
@@ -311,8 +329,14 @@ class TestCartesianToRanges:
         # Two points at the same angle, different distances
         points = [(2000.0, 0.0), (1000.0, 0.0)]
         ranges = cartesian_to_ranges(
-            points, 0.0, 0.0, 0.0,
-            angle_min=-math.pi, angle_max=math.pi, n_points=360, range_max=30.0,
+            points,
+            0.0,
+            0.0,
+            0.0,
+            angle_min=-math.pi,
+            angle_max=math.pi,
+            n_points=360,
+            range_max=30.0,
         )
         mid = self._angle_to_bin(0, -math.pi, math.pi, 360)
         assert ranges[mid] == pytest.approx(1.0, abs=0.01)
@@ -323,8 +347,14 @@ class TestCartesianToRanges:
         # Robot at origin facing 0°, points at 0° and 90°
         points = [(1000.0, 0.0), (0.0, 2000.0)]
         ranges = cartesian_to_ranges(
-            points, 0.0, 0.0, 0.0,
-            angle_min=-math.pi, angle_max=math.pi, n_points=360, range_max=30.0,
+            points,
+            0.0,
+            0.0,
+            0.0,
+            angle_min=-math.pi,
+            angle_max=math.pi,
+            n_points=360,
+            range_max=30.0,
         )
         mid = self._angle_to_bin(0, -math.pi, math.pi, 360)
         quarter = self._angle_to_bin(math.pi / 2, -math.pi, math.pi, 360)
@@ -338,8 +368,14 @@ class TestCartesianToRanges:
         # World-frame point at (5000, 4000) → 1m directly ahead.
         points = [(5000.0, 4000.0)]
         ranges = cartesian_to_ranges(
-            points, 5000.0, 3000.0, math.pi / 2,
-            angle_min=-math.pi, angle_max=math.pi, n_points=360, range_max=30.0,
+            points,
+            5000.0,
+            3000.0,
+            math.pi / 2,
+            angle_min=-math.pi,
+            angle_max=math.pi,
+            n_points=360,
+            range_max=30.0,
         )
         # Should be at 0° in robot-local frame (straight ahead), 1.0m
         mid = self._angle_to_bin(0, -math.pi, math.pi, 360)

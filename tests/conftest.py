@@ -15,8 +15,7 @@ import pytest
 
 @pytest.fixture()
 def _fast_asyncio_sleep(monkeypatch):
-    """Short-circuit asyncio.sleep to keep tests fast while still yielding the loop.
-    """
+    """Short-circuit asyncio.sleep to keep tests fast while still yielding the loop."""
 
     original_sleep = asyncio.sleep
 

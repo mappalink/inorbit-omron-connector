@@ -242,9 +242,7 @@ class ArclClient:
                         lines = getattr(fut, "_lines", [])
                         fut.set_result(lines)
 
-                elif cmd_key == "rangedevicegetcurrent" and msg.startswith(
-                    "RangeDeviceGetCurrent"
-                ):
+                elif cmd_key == "rangedevicegetcurrent" and msg.startswith("RangeDeviceGetCurrent"):
                     # Single-line response: complete immediately
                     fut.set_result([msg])
                     del self._pending_requests[cmd_key]
@@ -403,9 +401,7 @@ class ArclClient:
           RangeDeviceGetCurrent: <laser_name> x1 y1 x2 y2 ...
         Coordinates are in mm, relative to the robot.
         """
-        lines = await self.send_command(
-            f"rangeDeviceGetCurrent {laser_name}", timeout=2.0
-        )
+        lines = await self.send_command(f"rangeDeviceGetCurrent {laser_name}", timeout=2.0)
         points: list[tuple[float, float]] = []
         for line in lines:
             if not line.startswith("RangeDeviceGetCurrent"):

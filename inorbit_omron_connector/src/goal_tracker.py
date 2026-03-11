@@ -15,22 +15,26 @@ import time
 logger = logging.getLogger(__name__)
 
 # ARCL Status values that indicate the robot is actively navigating
-_NAVIGATING_STATUSES = frozenset({
-    "Going to goal",
-    "Driving to goal",
-    "Going to point",
-})
+_NAVIGATING_STATUSES = frozenset(
+    {
+        "Going to goal",
+        "Driving to goal",
+        "Going to point",
+    }
+)
 
 # ARCL Status values that indicate an idle/arrived state
-_IDLE_STATUSES = frozenset({
-    "Arrived at",
-    "Stopping",
-    "Stopped",
-    "Parked",
-    "Idle",
-    "Failed to get to",
-    "Failed going to",
-})
+_IDLE_STATUSES = frozenset(
+    {
+        "Arrived at",
+        "Stopping",
+        "Stopped",
+        "Parked",
+        "Idle",
+        "Failed to get to",
+        "Failed going to",
+    }
+)
 
 
 class GoalTracker:
@@ -110,9 +114,7 @@ class GoalTracker:
             self._initial_distance = distance_mm
 
         # Check for completion
-        if has_arrived == "1" or any(
-            omron_status.startswith(s) for s in _IDLE_STATUSES
-        ):
+        if has_arrived == "1" or any(omron_status.startswith(s) for s in _IDLE_STATUSES):
             failed = any(omron_status.startswith(s) for s in ("Failed",))
             payload = self._build_payload(
                 in_progress=False,
