@@ -26,8 +26,8 @@ bump:
 	new_version=$$(uv version --short); \
 	git add pyproject.toml uv.lock; \
 	git commit -m "Bump inorbit-omron-connector version: $${old_version} → $${new_version}"; \
-	git tag -a "inorbit-omron-connector-v$${new_version}" -m "Bump inorbit-omron-connector version: $${old_version} → $${new_version}"; \
-	echo "Bumped version $$old_version → $$new_version"
+	echo "Bumped version $$old_version → $$new_version"; \
+	echo "Push with 'git push' — CI will create the tag and release after checks pass."
 
 bump-patch:
 	@$(MAKE) bump PART=patch DRY=$${DRY:-0}

@@ -105,12 +105,13 @@ To release a new version:
    make bump DIRTY=1 PART=patch
    ```
 
-3. Push the commit and the tag:
+3. Push the commit:
 
    ```bash
    git push
-   git push --tags
    ```
+
+   CI will create the git tag and GitHub release after checks pass.
 
 > [!IMPORTANT]
 > The message of the last commit must match the configured pattern, e.g. "Bump inorbit-omron-connector version: 0.1.0 → 0.1.1", for the publish job to run.
