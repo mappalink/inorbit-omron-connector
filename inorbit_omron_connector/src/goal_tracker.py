@@ -50,7 +50,9 @@ class GoalTracker:
         # Each telemetry cycle, pass the ARCL status dict:
         payload = tracker.update(status)
         if payload is not None:
-            session.publish_key_values(mission_tracking=payload, is_event=True)
+            session.publish_key_values(
+                key_values={"mission_tracking": payload}, is_event=True
+            )
     """
 
     def __init__(self) -> None:

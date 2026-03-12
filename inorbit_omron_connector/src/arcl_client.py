@@ -399,7 +399,7 @@ class ArclClient:
 
         ARCL returns a single line:
           RangeDeviceGetCurrent: <laser_name> x1 y1 x2 y2 ...
-        Coordinates are in mm, relative to the robot.
+        Coordinates are in mm, in the map/world frame (not robot-local).
         """
         lines = await self.send_command(f"rangeDeviceGetCurrent {laser_name}", timeout=2.0)
         points: list[tuple[float, float]] = []
