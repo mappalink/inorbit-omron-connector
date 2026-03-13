@@ -3,6 +3,24 @@ revision = 3
 requires-python = ">=3.12"
 
 [[package]]
+name = "aiosql"
+version = "9.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a2/50/e12614b6f085b1560bd17e71658fa91d2a95c653fb2e0eb2457f41dfbeb4/aiosql-9.5.tar.gz", hash = "sha256:d5366d976ee251be6e919d8193de119e2e4f7862d1d4596ec0d81d8f6edbc6b3", size = 61807, upload-time = "2024-02-18T08:24:19.385Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d1/3f/f0a3c2a080554072069375ed29380cc41c7054788dc276cba732cde41f25/aiosql-9.5-py3-none-any.whl", hash = "sha256:aa7f4472a54d60353d87c6ec428271824213c693dc9c4f0abc7cd40b1805c472", size = 21728, upload-time = "2024-02-18T08:24:17.02Z" },
+]
+
+[[package]]
+name = "aiosqlite"
+version = "0.19.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ea/51/060efa10a814145acd4e42c6e5ed540b8714cad52ca026c5930e7c473049/aiosqlite-0.19.0.tar.gz", hash = "sha256:95ee77b91c8d2808bd08a59fbebf66270e9090c3d92ffbf260dc0db0b979577d", size = 21832, upload-time = "2023-04-17T06:28:50.694Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/4f/22d2edd4cd2a84e179f8c43806cb29cf03a344d2f27a7c6d5afef43bbe7e/aiosqlite-0.19.0-py3-none-any.whl", hash = "sha256:edba222e03453e094a3ce605db1b970c4b3376264e56f32e2a4959f948d66a96", size = 15942, upload-time = "2023-04-17T06:28:47.856Z" },
+]
+
+[[package]]
 name = "annotated-types"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -22,6 +40,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/96/f0/5eb65b2bb0d09ac6776f2eb54adee6abe8228ea05b20a5ad0e4945de8aac/anyio-4.12.1.tar.gz", hash = "sha256:41cfcc3a4c85d3f05c932da7c26d0201ac36f72abd4435ba90d0464a3ffed703", size = 228685, upload-time = "2026-01-06T11:45:21.246Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/0e/27be9fdef66e72d64c0cdc3cc2823101b80585f8119b5c112c2e8f5f7dab/anyio-4.12.1-py3-none-any.whl", hash = "sha256:d405828884fc140aa80a3c667b8beed277f1dfedec42ba031bd6ac3db606ab6c", size = 113592, upload-time = "2026-01-06T11:45:19.497Z" },
+]
+
+[[package]]
+name = "async-timeout"
+version = "4.0.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/87/d6/21b30a550dafea84b1b8eee21b5e23fa16d010ae006011221f33dcd8d7f8/async-timeout-4.0.3.tar.gz", hash = "sha256:4640d96be84d82d02ed59ea2b7105a0f7b33abe8703703cd0ab0bf87c427522f", size = 8345, upload-time = "2023-08-10T16:35:56.907Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a7/fa/e01228c2938de91d47b307831c62ab9e4001e747789d0b05baf779a6488c/async_timeout-4.0.3-py3-none-any.whl", hash = "sha256:7405140ff1230c310e51dc27b3145b9092d659ce68ff733fb0cefe3ee42be028", size = 5721, upload-time = "2023-08-10T16:35:55.203Z" },
 ]
 
 [[package]]
@@ -391,11 +418,29 @@ video = [
 ]
 
 [[package]]
+name = "inorbit-edge-executor"
+version = "3.2.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiosql" },
+    { name = "aiosqlite" },
+    { name = "async-timeout" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0a/35/511d9d964c36b34a5a4a6c4fba8dca01104ba5c7d164b1bfaa226dd541b2/inorbit_edge_executor-3.2.6.tar.gz", hash = "sha256:cb8795fd69041a233276324c82c0e4cc6c3561c3eccc4ccc5447637c576868b5", size = 42765, upload-time = "2025-12-01T19:02:27.468Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c8/12/df21da45ab85a2ee0a12ff666ced6d1f0e1d4f0e606f83d5e9c4b8a55e0a/inorbit_edge_executor-3.2.6-py3-none-any.whl", hash = "sha256:5e37eb4e16a094684c875c014e5441ee50b8452c01f7dbb23ccb7237ee9ad765", size = 39468, upload-time = "2025-12-01T19:02:26.305Z" },
+]
+
+[[package]]
 name = "inorbit-omron-connector"
 version = "0.1.5"
 source = { editable = "." }
 dependencies = [
     { name = "inorbit-connector", extra = ["system-stats"] },
+    { name = "inorbit-edge-executor" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
 ]
@@ -418,6 +463,7 @@ requires-dist = [
     { name = "colorlog", marker = "extra == 'dev'", specifier = "~=6.10.1" },
     { name = "coverage", marker = "extra == 'dev'", specifier = "~=7.11" },
     { name = "inorbit-connector", extras = ["system-stats"], specifier = "~=2.2.0" },
+    { name = "inorbit-edge-executor", specifier = ">=3.2,<4" },
     { name = "pydantic", specifier = ">=2.11,<3" },
     { name = "pydantic-settings", specifier = ">=2.11,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "~=8.4" },

@@ -36,6 +36,7 @@ class OmronArclConnectorConfig(BaseSettings):
     laser_range_min: float = 0.05  # meters
     laser_range_max: float = 30.0  # meters
     laser_n_points: int = 720  # 360° at 0.5° resolution
+    mission_database_file: Optional[str] = None  # SQLite path for edge-executor persistence
 
 
 class ConnectorConfig(InorbitConnectorConfig):
