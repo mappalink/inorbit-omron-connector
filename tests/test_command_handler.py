@@ -38,6 +38,11 @@ def connector():
         instance._goal_tracker = GoalTracker()
         instance._logger = MagicMock()
 
+        # Mock mission executor — handle_command returns False (not a mission cmd)
+        mock_mission_executor = AsyncMock()
+        mock_mission_executor.handle_command = AsyncMock(return_value=False)
+        instance._mission_executor = mock_mission_executor
+
         yield instance
 
 
@@ -113,6 +118,25 @@ class TestCommandRouting:
         await connector._inorbit_command_handler(COMMAND_CUSTOM_COMMAND, ["dock", []], options)
 
         connector._arcl.dock.assert_awaited_once()
+        result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
+
+    @pytest.mark.asyncio
+    async def test_routes_pauseRobot(self, connector, options, result_fn):
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND, ["pauseRobot", []], options
+        )
+
+        connector._arcl.set_block_driving.assert_awaited_once()
+        result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
+
+    @pytest.mark.asyncio
+    async def test_routes_resumeRobot(self, connector, options, result_fn):
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND, ["resumeRobot", []], options
+        )
+
+        connector._arcl.clear_block_driving.assert_awaited_once()
+        connector._arcl.go.assert_awaited_once()
         result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
 
     @pytest.mark.asyncio

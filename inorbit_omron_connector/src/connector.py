@@ -17,10 +17,12 @@ from inorbit_edge.robot import (
     COMMAND_NAV_GOAL,
     LaserConfig,
 )
+from inorbit_edge_executor.inorbit import InOrbitAPI as MissionInOrbitAPI
 
 from .config.models import ConnectorConfig
 from .arcl_client import ArclClient
 from .goal_tracker import GoalTracker
+from .mission_exec import OmronMissionExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +141,15 @@ class OmronArclConnector(Connector):
         self._laser_n_points = cfg.laser_n_points
         self._lasers_registered = False
         self._goal_tracker = GoalTracker()
+        self._mission_executor = OmronMissionExecutor(
+            robot_id=robot_id,
+            inorbit_api=MissionInOrbitAPI(
+                base_url=self._get_session().inorbit_rest_api_endpoint,
+                api_key=self.config.api_key,
+            ),
+            arcl_client=self._arcl,
+            database_file=cfg.mission_database_file,
+        )
 
     # -- Lifecycle ---------------------------------------------------------
 
@@ -157,8 +168,10 @@ class OmronArclConnector(Connector):
                 self._arcl.host,
                 self._arcl.port,
             )
+        await self._mission_executor.initialize()
 
     async def _disconnect(self) -> None:
+        await self._mission_executor.shutdown()
         await self._arcl.disconnect()
         logger.info("Disconnected from Omron ARCL")
 
@@ -324,6 +337,12 @@ class OmronArclConnector(Connector):
             script_name = args[0]
             args_list = list(args[1]) if len(args) > 1 else []
             script_args = dict(zip(args_list[::2], args_list[1::2]))
+
+            # Try edge-executor mission commands first
+            handled = await self._mission_executor.handle_command(script_name, script_args, options)
+            if handled:
+                return
+
             await self._handle_custom_command(script_name, script_args, result_fn)
 
         elif command_name == COMMAND_MESSAGE:
@@ -360,14 +379,14 @@ class OmronArclConnector(Connector):
                 logger.info("Sent stop")
                 result_fn(CommandResultCode.SUCCESS)
 
-            elif script_name == "pause":
+            elif script_name in ("pause", "pauseRobot"):
                 await self._arcl.set_block_driving(
                     BLOCK_NAME, "Paused by InOrbit", "Robot paused via InOrbit cloud command"
                 )
                 logger.info("Sent pause (set_block_driving)")
                 result_fn(CommandResultCode.SUCCESS)
 
-            elif script_name == "resume":
+            elif script_name in ("resume", "resumeRobot"):
                 await self._arcl.clear_block_driving(BLOCK_NAME)
                 await self._arcl.go()
                 logger.info("Sent resume (clear_block_driving + go)")
