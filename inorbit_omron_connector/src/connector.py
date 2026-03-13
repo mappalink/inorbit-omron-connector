@@ -141,6 +141,7 @@ class OmronArclConnector(Connector):
         self._laser_n_points = cfg.laser_n_points
         self._lasers_registered = False
         self._goal_tracker = GoalTracker()
+        self._goal_tracker_enabled = True
         self._mission_executor = OmronMissionExecutor(
             robot_id=robot_id,
             inorbit_api=MissionInOrbitAPI(
@@ -181,6 +182,12 @@ class OmronArclConnector(Connector):
         if not self._arcl.is_connected():
             logger.warning("ARCL not connected, skipping telemetry cycle")
             return
+
+        # Re-enable native goal tracking when edge executor is idle
+        if not self._goal_tracker_enabled:
+            executor_idle = self._get_session().missions_module.executor.wait_until_idle(0)
+            if executor_idle:
+                self._goal_tracker_enabled = True
 
         # Register lasers on first loop (session is available now)
         if self._laser_names and not self._lasers_registered:
@@ -243,9 +250,11 @@ class OmronArclConnector(Connector):
             self.publish_key_values(**kv)
 
         # Update goal tracker and publish mission_tracking if changed
-        tracking_payload = self._goal_tracker.update(status)
-        if tracking_payload is not None:
-            self._publish_mission_tracking(tracking_payload)
+        # Suppressed while edge executor is running to avoid double-reporting
+        if self._goal_tracker_enabled:
+            tracking_payload = self._goal_tracker.update(status)
+            if tracking_payload is not None:
+                self._publish_mission_tracking(tracking_payload)
 
         # Query odometer for velocity and publish via publish_odometry
         try:
@@ -341,6 +350,8 @@ class OmronArclConnector(Connector):
             # Try edge-executor mission commands first
             handled = await self._mission_executor.handle_command(script_name, script_args, options)
             if handled:
+                # Suppress native goal tracking while edge executor is active
+                self._goal_tracker_enabled = False
                 return
 
             await self._handle_custom_command(script_name, script_args, result_fn)
