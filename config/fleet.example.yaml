@@ -29,6 +29,9 @@ common:
   # laser_range_max: 30.0      # meters
   # laser_n_points: 720        # 360° at 0.5° resolution
 
+  # Edge executor mission persistence (optional, defaults to missions_<robot_id>.db)
+  # mission_database_file: "/data/missions.db"
+
 omron-hd1500:
   robot_name: "Omron HD1500"
   arcl_host: "10.200.0.2"

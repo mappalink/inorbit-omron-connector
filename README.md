@@ -26,9 +26,11 @@ This connector implementation is based on the Omron ARCL protocol. For detailed 
 
 - Multi-robot fleet management through a single connector instance
 - Real-time robot monitoring (pose, battery, state, velocity, etc.)
-- Automatic retry logic with exponential backoff for API calls
+- **Cloud execution**: navigate to goals, dock/undock, pause/resume via InOrbit cloud commands
+- **Edge execution**: multi-step missions run locally via `inorbit-edge-executor` — no cloud round-trips between steps, survives temporary connectivity loss
+- Multiple laser scanner streams (configurable, default 3)
 - Background polling architecture for efficient data fetching
-- Annotation synchronization for waypoint positions between Omron and InOrbit
+- Mission state persistence (SQLite) for crash recovery
 - Built on top of the [`inorbit-connector-python`](https://github.com/inorbit-ai/inorbit-connector-python) framework
 
 ## Requirements
