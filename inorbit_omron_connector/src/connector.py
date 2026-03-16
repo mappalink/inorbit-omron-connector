@@ -142,6 +142,10 @@ class OmronArclConnector(Connector):
         self._lasers_registered = False
         self._goal_tracker = GoalTracker()
         self._goal_tracker_enabled = True
+        # Last navigation command for pause/resume — ARCL block driving
+        # cancels the active goal, so resume must re-send it.
+        self._last_nav_goal: str | None = None
+        self._last_nav_point: tuple[int, int, int] | None = None
         self._mission_executor = OmronMissionExecutor(
             robot_id=robot_id,
             inorbit_api=MissionInOrbitAPI(
@@ -255,6 +259,10 @@ class OmronArclConnector(Connector):
             tracking_payload = self._goal_tracker.update(status)
             if tracking_payload is not None:
                 self._publish_mission_tracking(tracking_payload)
+                # Clear saved goal when navigation ends (arrived or failed)
+                if not tracking_payload.get("inProgress", True):
+                    self._last_nav_goal = None
+                    self._last_nav_point = None
 
         # Query odometer for velocity and publish via publish_odometry
         try:
@@ -368,6 +376,8 @@ class OmronArclConnector(Connector):
             if script_name == "goto_goal":
                 goal_name = script_args["--goal_name"]
                 self._goal_tracker.on_goal_dispatched(goal_name)
+                self._last_nav_goal = goal_name
+                self._last_nav_point = None
                 await self._arcl.goto(goal_name)
                 logger.info("Sent goto %s", goal_name)
                 result_fn(CommandResultCode.SUCCESS)
@@ -386,6 +396,8 @@ class OmronArclConnector(Connector):
                 abort_payload = self._goal_tracker.on_stop()
                 if abort_payload is not None:
                     self._publish_mission_tracking(abort_payload)
+                self._last_nav_goal = None
+                self._last_nav_point = None
                 await self._arcl.stop()
                 logger.info("Sent stop")
                 result_fn(CommandResultCode.SUCCESS)
@@ -399,8 +411,7 @@ class OmronArclConnector(Connector):
 
             elif script_name in ("resume", "resumeRobot"):
                 await self._arcl.clear_block_driving(BLOCK_NAME)
-                await self._arcl.go()
-                logger.info("Sent resume (clear_block_driving + go)")
+                await self._resume_last_goal()
                 result_fn(CommandResultCode.SUCCESS)
 
             else:
@@ -425,14 +436,33 @@ class OmronArclConnector(Connector):
                 result_fn(CommandResultCode.SUCCESS)
             elif msg == "inorbit_resume":
                 await self._arcl.clear_block_driving(BLOCK_NAME)
-                await self._arcl.go()
-                logger.info("inorbit_resume: clear_block_driving + go")
+                await self._resume_last_goal()
                 result_fn(CommandResultCode.SUCCESS)
             else:
                 logger.debug("Unhandled COMMAND_MESSAGE: %s", msg)
         except Exception as e:
             logger.error("COMMAND_MESSAGE '%s' failed: %s", msg, e)
             result_fn(CommandResultCode.FAILURE)
+
+    async def _resume_last_goal(self):
+        """Re-send the last navigation command after clearing a block.
+
+        ARCL block driving (abds) abandons the active goal, so a plain ``go``
+        after ``abdc`` has nowhere to go.  We re-issue the original goto or
+        gotopoint so the robot continues to its destination.
+        """
+        if self._last_nav_goal:
+            self._goal_tracker.on_goal_dispatched(self._last_nav_goal)
+            await self._arcl.goto(self._last_nav_goal)
+            logger.info("Resumed: re-sent goto %s", self._last_nav_goal)
+        elif self._last_nav_point:
+            x, y, t = self._last_nav_point
+            self._goal_tracker.on_goal_dispatched(f"({x / 1000:.1f}, {y / 1000:.1f})")
+            await self._arcl.gotopoint(x, y, t)
+            logger.info("Resumed: re-sent gotopoint %d %d %d", x, y, t)
+        else:
+            await self._arcl.go()
+            logger.info("Resumed: no saved goal, sent go")
 
     async def _handle_nav_goal(self, pose, result_fn):
         """Handle NAV_GOAL by sending gotopoint with the coordinates."""
@@ -447,6 +477,8 @@ class OmronArclConnector(Connector):
             theta_deg = int(math.degrees(theta))
 
             self._goal_tracker.on_goal_dispatched(f"({x:.1f}, {y:.1f})")
+            self._last_nav_goal = None
+            self._last_nav_point = (x_mm, y_mm, theta_deg)
             await self._arcl.gotopoint(x_mm, y_mm, theta_deg)
             logger.info("Sent gotopoint %d %d %d", x_mm, y_mm, theta_deg)
             result_fn(CommandResultCode.SUCCESS)

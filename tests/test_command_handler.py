@@ -43,6 +43,8 @@ def connector():
         mock_mission_executor.handle_command = AsyncMock(return_value=False)
         instance._mission_executor = mock_mission_executor
         instance._goal_tracker_enabled = True
+        instance._last_nav_goal = None
+        instance._last_nav_point = None
 
         yield instance
 
