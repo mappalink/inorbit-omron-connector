@@ -259,8 +259,14 @@ class OmronArclConnector(Connector):
             tracking_payload = self._goal_tracker.update(status)
             if tracking_payload is not None:
                 self._publish_mission_tracking(tracking_payload)
-                # Clear saved goal when navigation ends (arrived or failed)
-                if not tracking_payload.get("inProgress", True):
+                # Clear saved goal only on successful arrival.
+                # Do NOT clear on "Stopped"/"Failed" — pause (block driving)
+                # causes "Stopped" but we need the goal for resume.
+                # Explicit stop clears it in _handle_custom_command.
+                if (
+                    not tracking_payload.get("inProgress", True)
+                    and tracking_payload.get("state") == "Done"
+                ):
                     self._last_nav_goal = None
                     self._last_nav_point = None
 
