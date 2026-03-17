@@ -380,7 +380,7 @@ class ArclNodeFromStepBuilder(NodeFromStepBuilder):
         arguments = step.arguments or {}
 
         if action_id == "goto_goal":
-            goal_name = arguments.get("goal_name", "")
+            goal_name = arguments.get("goal_name") or arguments.get("--goal_name", "")
             if not goal_name:
                 raise RuntimeError("goto_goal action missing 'goal_name' argument")
             sequence = BehaviorTreeSequential(label=step.label or f"Go to {goal_name}")
