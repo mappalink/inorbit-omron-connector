@@ -361,7 +361,7 @@ class ArclNodeFromStepBuilder(NodeFromStepBuilder):
                 self._arcl_context,
                 x_m=wp.x,
                 y_m=wp.y,
-                theta_rad=wp.yaw,
+                theta_rad=wp.theta,
                 label=f"gotopoint ({wp.x:.1f}, {wp.y:.1f})",
             )
         )
