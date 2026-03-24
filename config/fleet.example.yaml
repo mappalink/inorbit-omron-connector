@@ -35,4 +35,4 @@ common:
 omron-hd1500:
   robot_name: "Omron HD1500"
   arcl_host: "10.200.0.2"
-  map_id: "map"
+  map_id: "omron_heal"
