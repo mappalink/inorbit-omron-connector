@@ -48,7 +48,8 @@ class ArclWorkerPool(WorkerPool):
         return ArclBehaviorTreeBuilderContext(arcl_client=self._arcl)
 
     async def pause_mission(self, mission_id):
-        await super().pause_mission(mission_id)
+        # Always send block driving to stop the robot, even if the mission
+        # isn't tracked by the edge executor (e.g. cloud-dispatched missions).
         try:
             await self._arcl.set_block_driving(
                 BLOCK_NAME, "Paused by InOrbit", "Mission paused via edge executor"
@@ -56,6 +57,12 @@ class ArclWorkerPool(WorkerPool):
             logger.info("ARCL pause (set_block_driving) on mission pause")
         except Exception as e:
             logger.warning("Failed to pause ARCL robot: %s", e)
+        try:
+            await super().pause_mission(mission_id)
+        except Exception:
+            logger.debug(
+                "No edge worker for mission %s (cloud mission?), skipping BT pause", mission_id
+            )
 
     async def resume_mission(self, mission_id):
         # Clear block driving BEFORE resuming the BT so the robot is ready
@@ -65,15 +72,25 @@ class ArclWorkerPool(WorkerPool):
             logger.info("ARCL clear_block_driving on mission resume")
         except Exception as e:
             logger.warning("Failed to clear block driving: %s", e)
-        await super().resume_mission(mission_id)
+        try:
+            await super().resume_mission(mission_id)
+        except Exception:
+            logger.debug(
+                "No edge worker for mission %s (cloud mission?), skipping BT resume", mission_id
+            )
 
     async def abort_mission(self, mission_id):
-        super().abort_mission(mission_id)
         try:
             await self._arcl.stop()
             logger.info("ARCL stop on mission abort")
         except Exception as e:
             logger.warning("Failed to stop ARCL robot on abort: %s", e)
+        try:
+            super().abort_mission(mission_id)
+        except Exception:
+            logger.debug(
+                "No edge worker for mission %s (cloud mission?), skipping BT abort", mission_id
+            )
 
 
 class OmronMissionExecutor:
