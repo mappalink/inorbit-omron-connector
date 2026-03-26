@@ -66,10 +66,13 @@ _FAILURE_PREFIXES = frozenset(
     {
         "Failed to get to",
         "Failed going to",
-        "Stopped",
-        "Stopping",
     }
 )
+
+# "Stopped" / "Stopping" are NOT treated as failures because ARCL reports
+# these during block-driving pauses (mission pause / robot pause).  When a
+# real abort is requested the executor cancels the BT directly, so we never
+# need to detect "Stopped" from the poll loop.
 
 
 class SharedMemoryKeys(StrEnum):
