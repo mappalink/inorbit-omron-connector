@@ -154,6 +154,7 @@ class OmronArclConnector(Connector):
             ),
             arcl_client=self._arcl,
             database_file=cfg.mission_database_file,
+            on_cloud_resume=self._resume_last_goal,
         )
 
     # -- Lifecycle ---------------------------------------------------------

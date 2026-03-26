@@ -10,6 +10,7 @@ forward to the robot via ARCL TCP commands.
 
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from enum import Enum
 
 from inorbit_connector.connector import CommandResultCode
@@ -40,8 +41,15 @@ class ArclWorkerPool(WorkerPool):
     """WorkerPool that executes steps locally via ARCL and forwards
     pause/resume/abort to the robot."""
 
-    def __init__(self, arcl_client: ArclClient, *args, **kwargs):
+    def __init__(
+        self,
+        arcl_client: ArclClient,
+        *args,
+        on_cloud_resume: Callable[[], Awaitable[None]] | None = None,
+        **kwargs,
+    ):
         self._arcl = arcl_client
+        self._on_cloud_resume = on_cloud_resume
         super().__init__(behavior_tree_builder=ArclTreeBuilder(), *args, **kwargs)
 
     def create_builder_context(self) -> ArclBehaviorTreeBuilderContext:
@@ -75,9 +83,13 @@ class ArclWorkerPool(WorkerPool):
         try:
             await super().resume_mission(mission_id)
         except Exception:
+            # Cloud mission — BT doesn't manage the goal, so re-send it.
             logger.debug(
                 "No edge worker for mission %s (cloud mission?), skipping BT resume", mission_id
             )
+            if self._on_cloud_resume:
+                await self._on_cloud_resume()
+                logger.info("Re-sent last nav goal after cloud resume")
 
     async def abort_mission(self, mission_id):
         try:
@@ -102,10 +114,12 @@ class OmronMissionExecutor:
         inorbit_api,
         arcl_client: ArclClient,
         database_file: str | None = None,
+        on_cloud_resume: Callable[[], Awaitable[None]] | None = None,
     ):
         self._robot_id = robot_id
         self._inorbit_api = inorbit_api
         self._arcl_client = arcl_client
+        self._on_cloud_resume = on_cloud_resume
         if database_file:
             if database_file == "dummy":
                 self._database_file = "dummy"
@@ -124,6 +138,7 @@ class OmronMissionExecutor:
             arcl_client=self._arcl_client,
             api=self._inorbit_api,
             db=db,
+            on_cloud_resume=self._on_cloud_resume,
         )
         await self._worker_pool.start()
         self._initialized = True
