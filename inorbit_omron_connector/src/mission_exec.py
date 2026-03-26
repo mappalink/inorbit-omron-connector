@@ -58,13 +58,14 @@ class ArclWorkerPool(WorkerPool):
             logger.warning("Failed to pause ARCL robot: %s", e)
 
     async def resume_mission(self, mission_id):
-        await super().resume_mission(mission_id)
+        # Clear block driving BEFORE resuming the BT so the robot is ready
+        # to accept navigation commands when the wait node re-sends them.
         try:
             await self._arcl.clear_block_driving(BLOCK_NAME)
-            await self._arcl.go()
-            logger.info("ARCL resume (clear_block_driving + go) on mission resume")
+            logger.info("ARCL clear_block_driving on mission resume")
         except Exception as e:
-            logger.warning("Failed to resume ARCL robot: %s", e)
+            logger.warning("Failed to clear block driving: %s", e)
+        await super().resume_mission(mission_id)
 
     async def abort_mission(self, mission_id):
         super().abort_mission(mission_id)

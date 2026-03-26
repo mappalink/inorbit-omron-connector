@@ -77,6 +77,12 @@ _FAILURE_PREFIXES = frozenset(
 
 class SharedMemoryKeys(StrEnum):
     ARCL_ERROR_MESSAGE = "arcl_error_message"
+    # Stores the last navigation command as a dict so WaitForArclCompletionNode
+    # can re-send it after a mission pause/resume cycle.  The BT serialises
+    # only the *currently running* node; after resume the goto node is already
+    # marked finished so only the wait node re-executes.  Without re-sending
+    # the command the robot sits idle and the poll loop never sees arrival.
+    ARCL_PENDING_NAV = "arcl_pending_nav"
 
 
 class ArclBehaviorTreeBuilderContext(BehaviorTreeBuilderContext):
@@ -116,8 +122,36 @@ class WaitForArclCompletionNode(BehaviorTree):
 
         self._shared_memory.add(SharedMemoryKeys.ARCL_ERROR_MESSAGE, None)
 
+    async def _resend_nav_if_idle(self):
+        """Re-send the last navigation command if the robot is not navigating.
+
+        After a mission pause/resume the BT only re-executes this wait node,
+        not the preceding goto node.  ARCL block driving (used for pause)
+        abandons the active goal, so the robot is idle when we resume.
+        """
+        pending = self._shared_memory.get(SharedMemoryKeys.ARCL_PENDING_NAV)
+        if not pending:
+            return
+        try:
+            status = await self._arcl.query_status()
+            omron_status = status.get("Status", "") if status else ""
+        except Exception:
+            return
+        if any(omron_status.startswith(p) for p in _NAVIGATING_PREFIXES):
+            return  # already navigating, nothing to do
+        cmd_type = pending.get("type")
+        if cmd_type == "goto":
+            goal = pending["goal_name"]
+            logger.info("Re-sending goto %s after resume", goal)
+            await self._arcl.goto(goal)
+        elif cmd_type == "gotopoint":
+            x, y, t = pending["x_mm"], pending["y_mm"], pending["theta_deg"]
+            logger.info("Re-sending gotopoint %d %d %d after resume", x, y, t)
+            await self._arcl.gotopoint(x, y, t)
+
     async def _execute(self):
         logger.info("Waiting for ARCL task completion")
+        await self._resend_nav_if_idle()
         elapsed = 0.0
 
         while True:
@@ -185,12 +219,17 @@ class ArclGotoPointNode(BehaviorTree):
         self._theta_rad = theta_rad
 
         self._shared_memory.add(SharedMemoryKeys.ARCL_ERROR_MESSAGE, None)
+        self._shared_memory.add(SharedMemoryKeys.ARCL_PENDING_NAV, None)
 
     async def _execute(self):
         x_mm = int(self._x_m * 1000)
         y_mm = int(self._y_m * 1000)
         theta_deg = int(math.degrees(self._theta_rad))
         logger.info("Sending gotopoint %d %d %d", x_mm, y_mm, theta_deg)
+        self._shared_memory.set(
+            SharedMemoryKeys.ARCL_PENDING_NAV,
+            {"type": "gotopoint", "x_mm": x_mm, "y_mm": y_mm, "theta_deg": theta_deg},
+        )
         try:
             await self._arcl.gotopoint(x_mm, y_mm, theta_deg)
         except Exception as e:
@@ -231,9 +270,14 @@ class ArclGotoGoalNode(BehaviorTree):
         self._goal_name = goal_name
 
         self._shared_memory.add(SharedMemoryKeys.ARCL_ERROR_MESSAGE, None)
+        self._shared_memory.add(SharedMemoryKeys.ARCL_PENDING_NAV, None)
 
     async def _execute(self):
         logger.info("Sending goto %s", self._goal_name)
+        self._shared_memory.set(
+            SharedMemoryKeys.ARCL_PENDING_NAV,
+            {"type": "goto", "goal_name": self._goal_name},
+        )
         try:
             await self._arcl.goto(self._goal_name)
         except Exception as e:

@@ -240,17 +240,25 @@ class TestArclWorkerPool:
         mock_arcl_client.set_block_driving.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_resume_calls_arcl_clear_block_and_go(self, mock_arcl_client):
+    async def test_resume_clears_block_before_bt_resume(self, mock_arcl_client):
+        """Block driving must be cleared BEFORE the BT resumes so the robot
+        can accept navigation commands re-sent by WaitForArclCompletionNode."""
         pool = ArclWorkerPool(
             arcl_client=mock_arcl_client,
             api=MagicMock(),
             db=MagicMock(),
         )
-        with patch("inorbit_edge_executor.worker_pool.WorkerPool.resume_mission", AsyncMock()):
+        call_order = []
+        mock_arcl_client.clear_block_driving = AsyncMock(
+            side_effect=lambda *a: call_order.append("clear_block")
+        )
+        mock_super = AsyncMock(side_effect=lambda *a: call_order.append("super_resume"))
+        with patch("inorbit_edge_executor.worker_pool.WorkerPool.resume_mission", mock_super):
             await pool.resume_mission("m-1")
 
         mock_arcl_client.clear_block_driving.assert_awaited_once()
-        mock_arcl_client.go.assert_awaited_once()
+        mock_arcl_client.go.assert_not_awaited()
+        assert call_order == ["clear_block", "super_resume"]
 
     @pytest.mark.asyncio
     async def test_abort_calls_arcl_stop(self, mock_arcl_client):
