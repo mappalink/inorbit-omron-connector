@@ -154,14 +154,14 @@ class WaitForArclCompletionNode(BehaviorTree):
 
     async def _execute(self):
         logger.info("Waiting for ARCL task completion")
-        resent = await self._resend_nav_if_idle()
-        elapsed = 0.0
-        if resent:
-            # After re-sending a command on resume, wait for the cached status
-            # to reflect the new navigation before checking success prefixes.
-            # Without this, the stale "Idle" status causes a false completion.
-            await asyncio.sleep(_POLL_INTERVAL_SECS * 3)
-            elapsed += _POLL_INTERVAL_SECS * 3
+        await self._resend_nav_if_idle()
+
+        # Wait for the ARCL command (sent by the preceding node) to take
+        # effect and for the telemetry cache to reflect the new state.
+        # Without this, cached_status still shows "Idle"/"Parked" from
+        # before the command, causing an immediate false success.
+        await asyncio.sleep(_POLL_INTERVAL_SECS * 3)
+        elapsed = _POLL_INTERVAL_SECS * 3
 
         while True:
             if self._timeout_secs and elapsed >= self._timeout_secs:
