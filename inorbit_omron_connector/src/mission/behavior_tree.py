@@ -123,20 +123,22 @@ class WaitForArclCompletionNode(BehaviorTree):
         self._shared_memory.add(SharedMemoryKeys.ARCL_ERROR_MESSAGE, None)
         self._shared_memory.add(SharedMemoryKeys.ARCL_PENDING_NAV, None)
 
-    async def _resend_nav_if_idle(self):
+    async def _resend_nav_if_idle(self) -> bool:
         """Re-send the last navigation command if the robot is not navigating.
 
         After a mission pause/resume the BT only re-executes this wait node,
         not the preceding goto node.  ARCL block driving (used for pause)
         abandons the active goal, so the robot is idle when we resume.
+
+        Returns True if a command was re-sent.
         """
         pending = self._shared_memory.get(SharedMemoryKeys.ARCL_PENDING_NAV)
         if not pending:
-            return
+            return False
         status = self._arcl.cached_status
         omron_status = status.get("Status", "") if status else ""
         if any(omron_status.startswith(p) for p in _NAVIGATING_PREFIXES):
-            return  # already navigating, nothing to do
+            return False  # already navigating, nothing to do
         cmd_type = pending.get("type")
         if cmd_type == "goto":
             goal = pending["goal_name"]
@@ -146,11 +148,20 @@ class WaitForArclCompletionNode(BehaviorTree):
             x, y, t = pending["x_mm"], pending["y_mm"], pending["theta_deg"]
             logger.info("Re-sending gotopoint %d %d %d after resume", x, y, t)
             await self._arcl.gotopoint(x, y, t)
+        else:
+            return False
+        return True
 
     async def _execute(self):
         logger.info("Waiting for ARCL task completion")
-        await self._resend_nav_if_idle()
+        resent = await self._resend_nav_if_idle()
         elapsed = 0.0
+        if resent:
+            # After re-sending a command on resume, wait for the cached status
+            # to reflect the new navigation before checking success prefixes.
+            # Without this, the stale "Idle" status causes a false completion.
+            await asyncio.sleep(_POLL_INTERVAL_SECS * 3)
+            elapsed += _POLL_INTERVAL_SECS * 3
 
         while True:
             if self._timeout_secs and elapsed >= self._timeout_secs:
