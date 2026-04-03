@@ -4,7 +4,7 @@
 
 [project]
 name = "inorbit-omron-connector"
-version = "0.1.20"
+version = "0.1.21"
 description = "InOrbit Edge connector for Omron HD1500 AMRs via ARCL"
 readme = "README.md"
 requires-python = ">=3.12"
