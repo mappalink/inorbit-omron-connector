@@ -4,6 +4,7 @@
 
 """Omron ARCL connector — bridges Omron HD1500 ARCL to InOrbit Cloud."""
 
+import asyncio
 import logging
 import math
 import re
@@ -28,6 +29,13 @@ logger = logging.getLogger(__name__)
 
 # Block driving name used for pause/resume
 BLOCK_NAME = "InOrbit"
+
+# ARCL status prefixes for dock/undock completion polling
+_DOCK_ACTIVE_PREFIXES = ("Docking", "Undocking", "Going to", "Driving to")
+_DOCK_SUCCESS_PREFIXES = ("Parked", "Idle", "Arrived at")
+_DOCK_FAILURE_PREFIXES = ("Failed to get to", "Failed going to")
+_DOCK_POLL_INTERVAL = 1.0
+_DOCK_TIMEOUT = 120.0
 
 # ARCL status field → InOrbit key-value name.
 # Known fields are mapped to conventional InOrbit names where possible.
@@ -387,12 +395,12 @@ class OmronArclConnector(Connector):
             elif script_name == "dock":
                 await self._arcl.dock()
                 logger.info("Sent dock")
-                result_fn(CommandResultCode.SUCCESS)
+                await self._wait_for_dock_completion("dock", result_fn)
 
             elif script_name == "undock":
                 await self._arcl.undock()
                 logger.info("Sent undock")
-                result_fn(CommandResultCode.SUCCESS)
+                await self._wait_for_dock_completion("undock", result_fn)
 
             elif script_name == "stop":
                 abort_payload = self._goal_tracker.on_stop()
@@ -426,6 +434,35 @@ class OmronArclConnector(Connector):
         except Exception as e:
             logger.error("Custom command '%s' failed: %s", script_name, e)
             result_fn(CommandResultCode.FAILURE)
+
+    async def _wait_for_dock_completion(self, action: str, result_fn):
+        """Poll ARCL status until dock/undock completes, then call result_fn."""
+        elapsed = 0.0
+        while elapsed < _DOCK_TIMEOUT:
+            try:
+                status = await self._arcl.query_status()
+                omron_status = status.get("Status", "") if status else ""
+
+                if any(omron_status.startswith(p) for p in _DOCK_SUCCESS_PREFIXES):
+                    logger.info("%s completed: %s", action, omron_status)
+                    result_fn(CommandResultCode.SUCCESS)
+                    return
+
+                if any(omron_status.startswith(p) for p in _DOCK_FAILURE_PREFIXES):
+                    logger.error("%s failed: %s", action, omron_status)
+                    result_fn(CommandResultCode.FAILURE)
+                    return
+
+                logger.debug("%s in progress: %s (%.0fs)", action, omron_status, elapsed)
+
+            except Exception as e:
+                logger.warning("%s status poll error: %s", action, e)
+
+            await asyncio.sleep(_DOCK_POLL_INTERVAL)
+            elapsed += _DOCK_POLL_INTERVAL
+
+        logger.error("%s timed out after %.0fs", action, _DOCK_TIMEOUT)
+        result_fn(CommandResultCode.FAILURE)
 
     async def _handle_message(self, msg, result_fn):
         """Handle COMMAND_MESSAGE — cloud-mode pause/resume."""

@@ -117,10 +117,23 @@ class TestCommandRouting:
         result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
 
     @pytest.mark.asyncio
-    async def test_routes_custom_command(self, connector, options, result_fn):
+    async def test_routes_dock(self, connector, options, result_fn):
+        connector._arcl.query_status = AsyncMock(
+            return_value={"Status": "Parked"}
+        )
         await connector._inorbit_command_handler(COMMAND_CUSTOM_COMMAND, ["dock", []], options)
 
         connector._arcl.dock.assert_awaited_once()
+        result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
+
+    @pytest.mark.asyncio
+    async def test_routes_undock(self, connector, options, result_fn):
+        connector._arcl.query_status = AsyncMock(
+            return_value={"Status": "Idle"}
+        )
+        await connector._inorbit_command_handler(COMMAND_CUSTOM_COMMAND, ["undock", []], options)
+
+        connector._arcl.undock.assert_awaited_once()
         result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
 
     @pytest.mark.asyncio
