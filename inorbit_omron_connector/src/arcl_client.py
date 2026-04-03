@@ -52,6 +52,10 @@ class ArclClient:
         self._pending_requests: dict[str, asyncio.Future] = {}
         self._pending_lock = asyncio.Lock()
 
+        # Cached status from the most recent successful query_status() call.
+        # Used by the BT wait node to avoid sending competing "status" commands.
+        self._cached_status: dict = {}
+
         # Internal tasks
         self._manager_task: asyncio.Task | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -362,7 +366,20 @@ class ArclClient:
             key = line[:colon_idx].strip()
             value = line[colon_idx + 1 :].strip()
             result[key] = value
+        if result:
+            self._cached_status = result
         return result
+
+    @property
+    def cached_status(self) -> dict:
+        """Return the most recent successfully parsed status dict.
+
+        The telemetry loop calls query_status() at ~1 Hz, keeping this
+        fresh.  BT wait nodes should read this instead of calling
+        query_status() directly to avoid concurrent "status" commands
+        whose responses get interleaved on the single ARCL TCP socket.
+        """
+        return self._cached_status
 
     async def query_odometer(self) -> dict:
         """Send 'odometer' and parse the response into a dict.

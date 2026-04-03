@@ -121,6 +121,7 @@ class WaitForArclCompletionNode(BehaviorTree):
         self._timeout_secs = timeout_secs
 
         self._shared_memory.add(SharedMemoryKeys.ARCL_ERROR_MESSAGE, None)
+        self._shared_memory.add(SharedMemoryKeys.ARCL_PENDING_NAV, None)
 
     async def _resend_nav_if_idle(self):
         """Re-send the last navigation command if the robot is not navigating.
@@ -132,11 +133,8 @@ class WaitForArclCompletionNode(BehaviorTree):
         pending = self._shared_memory.get(SharedMemoryKeys.ARCL_PENDING_NAV)
         if not pending:
             return
-        try:
-            status = await self._arcl.query_status()
-            omron_status = status.get("Status", "") if status else ""
-        except Exception:
-            return
+        status = self._arcl.cached_status
+        omron_status = status.get("Status", "") if status else ""
         if any(omron_status.startswith(p) for p in _NAVIGATING_PREFIXES):
             return  # already navigating, nothing to do
         cmd_type = pending.get("type")
@@ -161,26 +159,22 @@ class WaitForArclCompletionNode(BehaviorTree):
                 self._shared_memory.set(SharedMemoryKeys.ARCL_ERROR_MESSAGE, error_msg)
                 raise RuntimeError(error_msg)
 
-            try:
-                status = await self._arcl.query_status()
-                omron_status = status.get("Status", "") if status else ""
+            # Read cached status from the telemetry loop (~1 Hz) instead of
+            # sending a competing "status" command that would interleave with
+            # the telemetry query on the single ARCL TCP socket.
+            status = self._arcl.cached_status
+            omron_status = status.get("Status", "") if status else ""
+            logger.debug("ARCL cached status: %s", omron_status)
 
-                if any(omron_status.startswith(p) for p in _SUCCESS_PREFIXES):
-                    logger.info("ARCL task completed: %s", omron_status)
-                    return
+            if any(omron_status.startswith(p) for p in _SUCCESS_PREFIXES):
+                logger.info("ARCL task completed: %s", omron_status)
+                return
 
-                if any(omron_status.startswith(p) for p in _FAILURE_PREFIXES):
-                    error_msg = f"ARCL task failed: {omron_status}"
-                    logger.error(error_msg)
-                    self._shared_memory.set(SharedMemoryKeys.ARCL_ERROR_MESSAGE, error_msg)
-                    raise RuntimeError(error_msg)
-
-                logger.debug("ARCL status: %s, waiting...", omron_status)
-
-            except RuntimeError:
-                raise
-            except Exception as e:
-                logger.warning("ARCL status poll failed: %s", e)
+            if any(omron_status.startswith(p) for p in _FAILURE_PREFIXES):
+                error_msg = f"ARCL task failed: {omron_status}"
+                logger.error(error_msg)
+                self._shared_memory.set(SharedMemoryKeys.ARCL_ERROR_MESSAGE, error_msg)
+                raise RuntimeError(error_msg)
 
             await asyncio.sleep(_POLL_INTERVAL_SECS)
             elapsed += _POLL_INTERVAL_SECS
