@@ -461,6 +461,18 @@ class ArclClient:
         """Undock the robot."""
         await self._enqueue_command(CommandType.UNDOCK, "undock\n")
 
+    async def execute_macro(self, name: str):
+        """Trigger an ARCL macro by name.
+
+        Fire-and-forget at the protocol level — completion is observed via
+        the latched ``Status:`` field (`Executing macro <name>` while running,
+        `Completed macro <name>` on success, `Error: <reason>` on runtime
+        failure). Init failure for an unknown macro arrives as a
+        ``CommandError:`` line which the existing dispatcher routes to a
+        ``RuntimeError`` against the pending future.
+        """
+        await self._enqueue_command(CommandType.GENERIC, f"executeMacro {name}\n")
+
     async def set_block_driving(self, name: str, short_desc: str, long_desc: str):
         """Pause the robot (Application Block Driving Set)."""
         cmd = f'abds "{name}" "{short_desc}" "{long_desc}"\n'

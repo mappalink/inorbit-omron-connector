@@ -74,6 +74,17 @@ _FAILURE_PREFIXES = frozenset(
 # real abort is requested the executor cancels the BT directly, so we never
 # need to detect "Stopped" from the poll loop.
 
+# ARCL Status field transitions for executeMacro completion polling.
+# See fm-fsm-docs/docs/omron/OMRON_DOCKING.md for live capture evidence.
+# Identity is carried by the transition out of `Executing macro <name>`, not
+# by the destination prefix — the failure line ("Error: ...") doesn't carry
+# the macro name, which is fine because the kickoff guard already proved our
+# macro owned the Status field.
+_MACRO_ACTIVE_PREFIX = "Executing macro "
+_MACRO_SUCCESS_PREFIX = "Completed macro "
+_MACRO_FAILURE_PREFIXES = frozenset({"Error:"})  # tight — bare "Failed" is too generic
+_MACRO_KICKOFF_GRACE_SECS = 5.0
+
 
 class SharedMemoryKeys(StrEnum):
     ARCL_ERROR_MESSAGE = "arcl_error_message"
@@ -354,6 +365,141 @@ class ArclUndockNode(BehaviorTree):
         return ArclUndockNode(context, **kwargs)
 
 
+class ArclExecuteMacroNode(BehaviorTree):
+    """Sends executeMacro <name> to ARCL.
+
+    Init failure (CommandError on unknown macro name) surfaces as a
+    RuntimeError raised by the dispatcher. Runtime completion is observed by
+    a following ``WaitForMacroCompletionNode``.
+    """
+
+    def __init__(
+        self,
+        context: ArclBehaviorTreeBuilderContext,
+        macro_name: str,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._arcl = context.arcl_client
+        self._macro_name = macro_name
+        self._shared_memory = context.shared_memory
+        self._shared_memory.add(SharedMemoryKeys.ARCL_ERROR_MESSAGE, None)
+
+    async def _execute(self):
+        logger.info("Sending executeMacro %s", self._macro_name)
+        try:
+            await self._arcl.execute_macro(self._macro_name)
+        except Exception as e:
+            error_msg = f"executeMacro {self._macro_name} failed: {e}"
+            logger.error(error_msg)
+            self._shared_memory.set(SharedMemoryKeys.ARCL_ERROR_MESSAGE, error_msg)
+            raise RuntimeError(error_msg) from e
+
+    def dump_object(self):
+        return {"macro_name": self._macro_name, **super().dump_object()}
+
+    @classmethod
+    def from_object(cls, context, macro_name, **kwargs):
+        return ArclExecuteMacroNode(context, macro_name=macro_name, **kwargs)
+
+
+class WaitForMacroCompletionNode(BehaviorTree):
+    """Polls ARCL Status until a previously-launched macro reaches a terminal state.
+
+    Phases:
+      1. Kickoff guard — wait up to ``_MACRO_KICKOFF_GRACE_SECS`` for Status to
+         enter ``Executing macro <name>``. Instant macros (SFA toggles) may
+         reach a terminal value before our first poll; that is accepted as a
+         shortcut. If neither happens, the macro was likely rejected (EStop).
+      2. Completion poll — wait until Status reaches ``Completed macro <name>``
+         (success) or ``Error: ...`` (failure). Unknown destinations are not
+         treated as success — they keep polling, falling through to timeout.
+    """
+
+    def __init__(
+        self,
+        context: ArclBehaviorTreeBuilderContext,
+        macro_name: str,
+        timeout_secs: Optional[float] = None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._arcl = context.arcl_client
+        self._macro_name = macro_name
+        self._timeout_secs = timeout_secs
+        self._shared_memory = context.shared_memory
+        self._shared_memory.add(SharedMemoryKeys.ARCL_ERROR_MESSAGE, None)
+
+    async def _execute(self):
+        expected_active = f"{_MACRO_ACTIVE_PREFIX}{self._macro_name}"
+        elapsed = 0.0
+
+        # Phase 1: kickoff guard
+        saw_active = False
+        while elapsed < _MACRO_KICKOFF_GRACE_SECS:
+            cur = self._current_status()
+            if cur.startswith(expected_active):
+                saw_active = True
+                break
+            if cur.startswith(_MACRO_SUCCESS_PREFIX) and cur.endswith(self._macro_name):
+                logger.info("Macro %s completed (instant): %s", self._macro_name, cur)
+                return
+            if any(cur.startswith(p) for p in _MACRO_FAILURE_PREFIXES):
+                error_msg = f"Macro {self._macro_name} failed before active observed: {cur}"
+                logger.error(error_msg)
+                self._shared_memory.set(SharedMemoryKeys.ARCL_ERROR_MESSAGE, error_msg)
+                raise RuntimeError(error_msg)
+            await asyncio.sleep(_POLL_INTERVAL_SECS)
+            elapsed += _POLL_INTERVAL_SECS
+
+        if not saw_active:
+            error_msg = f"Macro {self._macro_name} never reached active status (EStop or rejected?)"
+            logger.error(error_msg)
+            self._shared_memory.set(SharedMemoryKeys.ARCL_ERROR_MESSAGE, error_msg)
+            raise RuntimeError(error_msg)
+
+        # Phase 2: wait for active → terminal transition
+        while True:
+            if self._timeout_secs and elapsed >= self._timeout_secs:
+                error_msg = f"Macro {self._macro_name} timed out after {self._timeout_secs:.0f}s"
+                logger.error(error_msg)
+                self._shared_memory.set(SharedMemoryKeys.ARCL_ERROR_MESSAGE, error_msg)
+                raise RuntimeError(error_msg)
+
+            cur = self._current_status()
+            if cur.startswith(_MACRO_SUCCESS_PREFIX):
+                logger.info("Macro %s completed: %s", self._macro_name, cur)
+                return
+            if any(cur.startswith(p) for p in _MACRO_FAILURE_PREFIXES):
+                error_msg = f"Macro {self._macro_name} failed: {cur}"
+                logger.error(error_msg)
+                self._shared_memory.set(SharedMemoryKeys.ARCL_ERROR_MESSAGE, error_msg)
+                raise RuntimeError(error_msg)
+            # Active or unknown — keep polling. Unknown must NOT report success
+            # (premature SUCCESS is the dangerous failure mode).
+            logger.debug("Macro %s status: %s (%.0fs)", self._macro_name, cur, elapsed)
+
+            await asyncio.sleep(_POLL_INTERVAL_SECS)
+            elapsed += _POLL_INTERVAL_SECS
+
+    def _current_status(self) -> str:
+        status = self._arcl.cached_status
+        return status.get("Status", "") if status else ""
+
+    def dump_object(self):
+        return {
+            "macro_name": self._macro_name,
+            "timeout_secs": self._timeout_secs,
+            **super().dump_object(),
+        }
+
+    @classmethod
+    def from_object(cls, context, macro_name, timeout_secs=None, **kwargs):
+        return WaitForMacroCompletionNode(
+            context, macro_name=macro_name, timeout_secs=timeout_secs, **kwargs
+        )
+
+
 # ---------------------------------------------------------------------------
 # Abort node — stops robot before reporting abort
 # ---------------------------------------------------------------------------
@@ -476,6 +622,28 @@ class ArclNodeFromStepBuilder(NodeFromStepBuilder):
             )
             return sequence
 
+        if action_id in ("execute_macro", "executeMacro"):
+            macro_name = arguments.get("macro_name") or arguments.get("--macro_name", "")
+            if not macro_name:
+                raise RuntimeError("execute_macro action missing 'macro_name' argument")
+            sequence = BehaviorTreeSequential(label=step.label or f"Macro {macro_name}")
+            sequence.add_node(
+                ArclExecuteMacroNode(
+                    self._arcl_context,
+                    macro_name=macro_name,
+                    label=f"executeMacro {macro_name}",
+                )
+            )
+            sequence.add_node(
+                WaitForMacroCompletionNode(
+                    self._arcl_context,
+                    macro_name=macro_name,
+                    timeout_secs=step.timeout_secs,
+                    label=f"Wait for macro {macro_name} completion",
+                )
+            )
+            return sequence
+
         # Unknown action — fall back to default (cloud round-trip)
         logger.warning("Unknown action '%s' — falling back to cloud execution", action_id)
         return super().visit_run_action(step)
@@ -487,7 +655,9 @@ arcl_node_types = [
     ArclGotoGoalNode,
     ArclDockNode,
     ArclUndockNode,
+    ArclExecuteMacroNode,
     WaitForArclCompletionNode,
+    WaitForMacroCompletionNode,
     ArclMissionAbortedNode,
 ]
 register_accepted_node_types(arcl_node_types)

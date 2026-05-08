@@ -37,6 +37,19 @@ _DOCK_FAILURE_PREFIXES = ("Failed to get to", "Failed going to")
 _DOCK_POLL_INTERVAL = 1.0
 _DOCK_TIMEOUT = 120.0
 
+# ARCL Status field transitions for executeMacro completion polling.
+# Verified 2026-05-08; see fm-fsm-docs/docs/omron/OMRON_DOCKING.md.
+# Identity is carried by the *transition* out of `Executing macro <name>`,
+# not by the destination prefix — the failure line ("Error: ...") doesn't
+# carry the macro name, which is fine because Phase 1 already proved our
+# macro owned the Status field.
+_MACRO_ACTIVE_PREFIX = "Executing macro "
+_MACRO_SUCCESS_PREFIX = "Completed macro "
+_MACRO_FAILURE_PREFIXES = ("Error:",)  # tight — bare "Failed" is too generic
+_MACRO_KICKOFF_GRACE = 5.0  # max seconds to wait for Status to reflect kickoff
+_MACRO_TIMEOUT = 75.0  # PrecisionDrive map config Timeout=60; +15s margin
+_MACRO_POLL_INTERVAL = 1.0
+
 # ARCL status field → InOrbit key-value name.
 # Known fields are mapped to conventional InOrbit names where possible.
 _ARCL_STATUS_MAP: dict[str, str] = {
@@ -402,6 +415,16 @@ class OmronArclConnector(Connector):
                 logger.info("Sent undock")
                 await self._wait_for_dock_completion("undock", result_fn)
 
+            elif script_name in ("execute_macro", "executeMacro"):
+                macro_name = script_args.get("--macro_name") or script_args.get("macro_name")
+                if not macro_name:
+                    logger.error("execute_macro missing --macro_name / macro_name argument")
+                    result_fn(CommandResultCode.FAILURE)
+                    return
+                await self._arcl.execute_macro(macro_name)
+                logger.info("Sent executeMacro %s", macro_name)
+                await self._wait_for_macro_completion(macro_name, result_fn)
+
             elif script_name == "stop":
                 abort_payload = self._goal_tracker.on_stop()
                 if abort_payload is not None:
@@ -462,6 +485,81 @@ class OmronArclConnector(Connector):
             elapsed += _DOCK_POLL_INTERVAL
 
         logger.error("%s timed out after %.0fs", action, _DOCK_TIMEOUT)
+        result_fn(CommandResultCode.FAILURE)
+
+    async def _wait_for_macro_completion(self, macro_name: str, result_fn):
+        """Poll ARCL Status field for macro lifecycle completion.
+
+        Phases:
+          1. Kickoff guard — wait up to ``_MACRO_KICKOFF_GRACE`` seconds for
+             Status to enter ``Executing macro <name>``. If Status reaches a
+             terminal value (Completed/Error) directly, accept it (instant
+             macros like SFA toggles can complete before our first poll).
+             If neither happens, treat as kickoff failure (likely EStop).
+          2. Completion poll — wait until Status leaves the active state and
+             categorise the destination.
+        """
+        expected_active = f"{_MACRO_ACTIVE_PREFIX}{macro_name}"
+        elapsed = 0.0
+        saw_active = False
+
+        # Phase 1: kickoff guard
+        while elapsed < _MACRO_KICKOFF_GRACE:
+            try:
+                status = await self._arcl.query_status()
+                cur = status.get("Status", "") if status else ""
+            except Exception as e:
+                logger.warning("macro %s status poll error: %s", macro_name, e)
+                cur = ""
+
+            if cur.startswith(expected_active):
+                saw_active = True
+                break
+
+            # Instant-macro shortcut: terminal state reached before we saw active
+            if cur.startswith(_MACRO_SUCCESS_PREFIX) and cur.endswith(macro_name):
+                logger.info("Macro %s completed (instant): %s", macro_name, cur)
+                result_fn(CommandResultCode.SUCCESS)
+                return
+            if any(cur.startswith(p) for p in _MACRO_FAILURE_PREFIXES):
+                logger.error("Macro %s failed before active observed: %s", macro_name, cur)
+                result_fn(CommandResultCode.FAILURE)
+                return
+
+            await asyncio.sleep(_MACRO_POLL_INTERVAL)
+            elapsed += _MACRO_POLL_INTERVAL
+
+        if not saw_active:
+            logger.warning("Macro %s never reached active status (EStop or rejected?)", macro_name)
+            result_fn(CommandResultCode.FAILURE)
+            return
+
+        # Phase 2: wait for active → terminal transition
+        while elapsed < _MACRO_TIMEOUT:
+            try:
+                status = await self._arcl.query_status()
+                cur = status.get("Status", "") if status else ""
+            except Exception as e:
+                logger.warning("macro %s status poll error: %s", macro_name, e)
+                cur = expected_active  # assume still running on transient errors
+
+            if cur.startswith(_MACRO_SUCCESS_PREFIX):
+                logger.info("Macro %s completed: %s", macro_name, cur)
+                result_fn(CommandResultCode.SUCCESS)
+                return
+            if any(cur.startswith(p) for p in _MACRO_FAILURE_PREFIXES):
+                logger.error("Macro %s failed: %s", macro_name, cur)
+                result_fn(CommandResultCode.FAILURE)
+                return
+            # Anything else (still active, brief excursion, unknown state) →
+            # keep polling. Unknown-destination must not declare SUCCESS — that
+            # would be premature SUCCESS, the dangerous failure mode.
+            logger.debug("Macro %s status: %s (%.0fs)", macro_name, cur, elapsed)
+
+            await asyncio.sleep(_MACRO_POLL_INTERVAL)
+            elapsed += _MACRO_POLL_INTERVAL
+
+        logger.error("Macro %s timed out after %.0fs", macro_name, _MACRO_TIMEOUT)
         result_fn(CommandResultCode.FAILURE)
 
     async def _handle_message(self, msg, result_fn):

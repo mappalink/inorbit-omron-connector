@@ -27,6 +27,7 @@ def connector():
         mock_arcl.gotopoint = AsyncMock()
         mock_arcl.dock = AsyncMock()
         mock_arcl.undock = AsyncMock()
+        mock_arcl.execute_macro = AsyncMock()
         mock_arcl.stop = AsyncMock()
 
         from inorbit_omron_connector.src.connector import OmronArclConnector
@@ -118,9 +119,7 @@ class TestCommandRouting:
 
     @pytest.mark.asyncio
     async def test_routes_dock(self, connector, options, result_fn):
-        connector._arcl.query_status = AsyncMock(
-            return_value={"Status": "Parked"}
-        )
+        connector._arcl.query_status = AsyncMock(return_value={"Status": "Parked"})
         await connector._inorbit_command_handler(COMMAND_CUSTOM_COMMAND, ["dock", []], options)
 
         connector._arcl.dock.assert_awaited_once()
@@ -128,9 +127,7 @@ class TestCommandRouting:
 
     @pytest.mark.asyncio
     async def test_routes_undock(self, connector, options, result_fn):
-        connector._arcl.query_status = AsyncMock(
-            return_value={"Status": "Idle"}
-        )
+        connector._arcl.query_status = AsyncMock(return_value={"Status": "Idle"})
         await connector._inorbit_command_handler(COMMAND_CUSTOM_COMMAND, ["undock", []], options)
 
         connector._arcl.undock.assert_awaited_once()
@@ -160,3 +157,95 @@ class TestCommandRouting:
         await connector._inorbit_command_handler("unknownCommand", ["something"], options)
 
         result_fn.assert_called_once_with(CommandResultCode.FAILURE)
+
+
+# -- executeMacro custom command ---------------------------------------------
+
+
+class TestExecuteMacro:
+    @pytest.mark.asyncio
+    async def test_missing_macro_name_returns_failure(self, connector, options, result_fn):
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND, ["execute_macro", []], options
+        )
+
+        connector._arcl.execute_macro.assert_not_awaited()
+        result_fn.assert_called_once_with(CommandResultCode.FAILURE)
+
+    @pytest.mark.asyncio
+    async def test_instant_success_via_completed_macro_status(self, connector, options, result_fn):
+        """Instant macros (SFA toggles) may reach `Completed macro <name>`
+        before the first poll observes the active state. The kickoff guard's
+        instant-success shortcut must accept this and report SUCCESS."""
+        macro = "SFA_WS1_On"
+        connector._arcl.query_status = AsyncMock(
+            return_value={"Status": f"Completed macro {macro}"}
+        )
+
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND,
+            ["execute_macro", ["--macro_name", macro]],
+            options,
+        )
+
+        connector._arcl.execute_macro.assert_awaited_once_with(macro)
+        result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
+
+    @pytest.mark.asyncio
+    async def test_active_then_completed_returns_success(self, connector, options, result_fn):
+        macro = "PrecisionDriveTafel_LB"
+        connector._arcl.query_status = AsyncMock(
+            side_effect=[
+                {"Status": f"Executing macro {macro}"},
+                {"Status": f"Completed macro {macro}"},
+            ]
+        )
+
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND,
+            ["execute_macro", ["--macro_name", macro]],
+            options,
+        )
+
+        connector._arcl.execute_macro.assert_awaited_once_with(macro)
+        result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
+
+    @pytest.mark.asyncio
+    async def test_active_then_error_returns_failure(self, connector, options, result_fn):
+        """Runtime failure (e.g. PrecisionDrive can't find target) shows up as
+        `Error: <reason>` in the Status field. The line itself doesn't carry
+        the macro name — identity is carried by the prior active-state observation."""
+        macro = "PrecisionDriveTafel_LB"
+        connector._arcl.query_status = AsyncMock(
+            side_effect=[
+                {"Status": f"Executing macro {macro}"},
+                {"Status": "Error: Failed to drive to Target"},
+            ]
+        )
+
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND,
+            ["execute_macro", ["--macro_name", macro]],
+            options,
+        )
+
+        connector._arcl.execute_macro.assert_awaited_once_with(macro)
+        result_fn.assert_called_once_with(CommandResultCode.FAILURE)
+
+    @pytest.mark.asyncio
+    async def test_edge_arg_form_macro_name_without_prefix(self, connector, options, result_fn):
+        """Edge MissionDefinition steps pass arguments without the `--` prefix.
+        The handler accepts both `--macro_name` (cloud) and `macro_name` (edge)."""
+        macro = "SFA_WS1_Off"
+        connector._arcl.query_status = AsyncMock(
+            return_value={"Status": f"Completed macro {macro}"}
+        )
+
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND,
+            ["execute_macro", ["macro_name", macro]],
+            options,
+        )
+
+        connector._arcl.execute_macro.assert_awaited_once_with(macro)
+        result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
