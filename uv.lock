@@ -436,7 +436,7 @@ wheels = [
 
 [[package]]
 name = "inorbit-omron-connector"
-version = "0.1.21"
+version = "0.1.22"
 source = { editable = "." }
 dependencies = [
     { name = "inorbit-connector", extra = ["system-stats"] },
