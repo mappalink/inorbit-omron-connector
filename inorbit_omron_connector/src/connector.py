@@ -9,7 +9,9 @@ import logging
 import math
 import re
 from pathlib import Path
+from typing import override
 
+from inorbit_connector.commands import parse_custom_command_args
 from inorbit_connector.connector import Connector, CommandResultCode
 from inorbit_connector.models import MapConfigTemp
 from inorbit_edge.robot import (
@@ -180,6 +182,7 @@ class OmronArclConnector(Connector):
 
     # -- Lifecycle ---------------------------------------------------------
 
+    @override
     async def _connect(self) -> None:
         # Start the ARCL connection manager (retries internally).
         # Don't block waiting — the base class needs _connect() to return
@@ -197,6 +200,7 @@ class OmronArclConnector(Connector):
             )
         await self._mission_executor.initialize()
 
+    @override
     async def _disconnect(self) -> None:
         await self._mission_executor.shutdown()
         await self._arcl.disconnect()
@@ -204,6 +208,7 @@ class OmronArclConnector(Connector):
 
     # -- Main loop (~1 Hz) ------------------------------------------------
 
+    @override
     async def _execution_loop(self) -> None:
         if not self._arcl.is_connected():
             logger.warning("ARCL not connected, skipping telemetry cycle")
@@ -343,6 +348,7 @@ class OmronArclConnector(Connector):
 
     # -- Map ---------------------------------------------------------------
 
+    @override
     async def fetch_map(self, frame_id: str) -> MapConfigTemp | None:
         """Load the map image from a local file and return it to InOrbit."""
         if not self._map_file:
@@ -367,6 +373,7 @@ class OmronArclConnector(Connector):
 
     # -- Command handler ---------------------------------------------------
 
+    @override
     async def _inorbit_command_handler(self, command_name, args, options):
         result_fn = options["result_function"]
 
@@ -374,9 +381,9 @@ class OmronArclConnector(Connector):
             await self._handle_nav_goal(args[0], result_fn)
 
         elif command_name == COMMAND_CUSTOM_COMMAND:
-            script_name = args[0]
-            args_list = list(args[1]) if len(args) > 1 else []
-            script_args = dict(zip(args_list[::2], args_list[1::2]))
+            # parse_custom_command_args raises CommandFailure on malformed
+            # input, which the SDK converts to a FAILURE result automatically.
+            script_name, script_args = parse_custom_command_args(args)
 
             # Try edge-executor mission commands first
             handled = await self._mission_executor.handle_command(script_name, script_args, options)
