@@ -6,8 +6,20 @@
 
 from typing import Optional
 
+from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from inorbit_connector.models import InorbitConnectorConfig
+
+
+class TablePlcConfig(BaseModel):
+    """One workbench lifting-column PLC (Beckhoff TwinCAT over ADS).
+
+    See fm-fsm-docs/docs/omron/OMRON_PLC_INTERFACE_SPEC.md.
+    """
+
+    ip: str
+    ams_net_id: str  # PLC AmsNetId (usually <ip>.1.1, confirm on the machine)
+    heights: dict[str, int] = {}  # named heights in mm, e.g. retracted: 800, pickup: 1131
 
 
 class OmronArclConnectorConfig(BaseSettings):
@@ -37,6 +49,14 @@ class OmronArclConnectorConfig(BaseSettings):
     laser_range_max: float = 30.0  # meters
     laser_n_points: int = 720  # 360° at 0.5° resolution
     mission_database_file: Optional[str] = None  # SQLite path for edge-executor persistence
+    # Workbench PLC integration (table transport missions)
+    plc_tables: dict[str, TablePlcConfig] = {}  # keyed by table id
+    # AmsNetId this connector declares; must equal the client AmsNetId in the
+    # static ADS route on each PLC (ours: 10.102.0.18.1.1)
+    plc_client_ams_net_id: Optional[str] = None
+    plc_deadband_mm: int = 10  # match the PLC's deadband (value pending from FM)
+    plc_move_timeout_secs: float = 60.0
+    plc_check_position_valid: bool = False  # enable once g_xPositionValid exists on the PLC
 
 
 class ConnectorConfig(InorbitConnectorConfig):

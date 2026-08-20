@@ -441,6 +441,7 @@ source = { editable = "." }
 dependencies = [
     { name = "inorbit-connector", extra = ["system-stats"] },
     { name = "inorbit-edge-executor" },
+    { name = "pyads" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
 ]
@@ -464,6 +465,7 @@ requires-dist = [
     { name = "coverage", marker = "extra == 'dev'", specifier = "~=7.11" },
     { name = "inorbit-connector", extras = ["system-stats"], specifier = "~=2.2.0" },
     { name = "inorbit-edge-executor", specifier = ">=3.2,<4" },
+    { name = "pyads", specifier = ">=3.4,<4" },
     { name = "pydantic", specifier = ">=2.11,<3" },
     { name = "pydantic-settings", specifier = ">=2.11,<3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "~=8.4" },
@@ -727,6 +729,22 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/04/78/0acd37ca84ce3ddffaa92ef0f571e073faa6d8ff1f0559ab1272188ea2be/psutil-7.2.2-cp36-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:b58fabe35e80b264a4e3bb23e6b96f9e45a3df7fb7eed419ac0e5947c61e47cc", size = 148266, upload-time = "2026-01-28T18:15:31.597Z" },
     { url = "https://files.pythonhosted.org/packages/b4/90/e2159492b5426be0c1fef7acba807a03511f97c5f86b3caeda6ad92351a7/psutil-7.2.2-cp37-abi3-win_amd64.whl", hash = "sha256:eb7e81434c8d223ec4a219b5fc1c47d0417b12be7ea866e24fb5ad6e84b3d988", size = 137737, upload-time = "2026-01-28T18:15:33.849Z" },
     { url = "https://files.pythonhosted.org/packages/8c/c7/7bb2e321574b10df20cbde462a94e2b71d05f9bbda251ef27d104668306a/psutil-7.2.2-cp37-abi3-win_arm64.whl", hash = "sha256:8c233660f575a5a89e6d4cb65d9f938126312bca76d8fe087b947b3a1aaac9ee", size = 134617, upload-time = "2026-01-28T18:15:36.514Z" },
+]
+
+[[package]]
+name = "pyads"
+version = "3.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/a7/ce/a7b8cc6bc9994d1103c1caa5d45f3b6b5fdc2b1b56b7929e0b8725cd5b01/pyads-3.6.0.tar.gz", hash = "sha256:f728659fee0c7890d16f10d1b285e3c95907e64a0e74194fa2867546e9cea527", size = 456751, upload-time = "2026-06-16T10:56:45.767Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0a/14/1c089843874836cafa7f0aa948e633740ffc91a6fb7112948ababb123f74/pyads-3.6.0-py3-none-macosx_10_15_x86_64.whl", hash = "sha256:f867eb467cbbfca4388e2694f42754bcf199cdf52923c35b1531b5493a31db0c", size = 178922, upload-time = "2026-06-16T10:56:34.978Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/b2/344216ab3fbfef71dc896c9b7005419847256ec452cd9a7d8b5aa4360168/pyads-3.6.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:0113d9bf71bf5fdebb9032e9ddde27733c9c3bfb4bf9ff7d5b74aea057336a0f", size = 172917, upload-time = "2026-06-16T10:56:36.406Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/93/b28ceb78ecb3cd7f56669d0b1030644e199fee15b479d6bc3b2e63463e35/pyads-3.6.0-py3-none-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:92ee9a0f19f0d363a2c0f358331849e9598587b96549ac53ce730ea528ab204f", size = 214034, upload-time = "2026-06-16T10:56:37.595Z" },
+    { url = "https://files.pythonhosted.org/packages/1f/40/967728f1d03cce361a0e437a21481416823053012aa60142ffa64b877a0e/pyads-3.6.0-py3-none-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5f92ea4821fce21a6a880e3bb0bdac4002c208bb7a00da578f1a0ba4128f635d", size = 235134, upload-time = "2026-06-16T10:56:38.986Z" },
+    { url = "https://files.pythonhosted.org/packages/6e/73/2f94bbbbc754a2dbb2d2000ddbdbcca212efc773d631fb030d21ed938a61/pyads-3.6.0-py3-none-manylinux_2_39_riscv64.whl", hash = "sha256:8881a8643e028b94e5c70c75f85a27656b6f9b9c9bc9265ab9c3bfec9ed448c4", size = 221685, upload-time = "2026-06-16T10:56:40.404Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/b5/9c886a113cf80b13112841a811486fc86e341ab16a935f18a015343fcdae/pyads-3.6.0-py3-none-win32.whl", hash = "sha256:9484d49a7f9bb8162a4b1a8474fffdac09a36452acddc441a3dd300f9bf66751", size = 77794, upload-time = "2026-06-16T10:56:41.882Z" },
+    { url = "https://files.pythonhosted.org/packages/63/41/4031430a29da2d0bad29f971c32f33b9164bdf1f3da156bdaa9c5aa30016/pyads-3.6.0-py3-none-win_amd64.whl", hash = "sha256:18f3a43eaf92d33dcd15cbe5060aa706da2d7642d2878e95a5cc9175dbafe8c6", size = 77797, upload-time = "2026-06-16T10:56:43.075Z" },
+    { url = "https://files.pythonhosted.org/packages/04/6b/0afd179426dc61c1fbd7a0c38f6f9e4e672842941c33af03930d53e7288f/pyads-3.6.0-py3-none-win_arm64.whl", hash = "sha256:e70301f6c1eea76492cfe715ec1691022603128bc629d75d8869e6210854ff29", size = 77798, upload-time = "2026-06-16T10:56:44.377Z" },
 ]
 
 [[package]]
