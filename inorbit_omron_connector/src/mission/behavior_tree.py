@@ -35,8 +35,12 @@ from inorbit_edge_executor.datatypes import (
 from inorbit_edge_executor.inorbit import MissionStatus
 
 from inorbit_omron_connector.src.arcl_client import ArclClient
+from inorbit_omron_connector.src.plc_client import PlcError, TablePlc
 
 logger = logging.getLogger(__name__)
+
+# plc_legs action → named height in TablePlcConfig.heights (mirrors connector.py)
+_PLC_ACTION_HEIGHT_KEY = {"retract": "retracted", "extend": "pickup"}
 
 # Polling interval for ARCL status checks
 _POLL_INTERVAL_SECS = 1.0
@@ -97,15 +101,37 @@ class SharedMemoryKeys(StrEnum):
 
 
 class ArclBehaviorTreeBuilderContext(BehaviorTreeBuilderContext):
-    """Extended context carrying an ArclClient reference."""
+    """Extended context carrying an ArclClient and the workbench PLCs."""
 
-    def __init__(self, arcl_client: ArclClient, **kwargs):
+    def __init__(
+        self,
+        arcl_client: ArclClient,
+        plc_tables: dict[str, TablePlc] | None = None,
+        plc_heights: dict[str, dict[str, int]] | None = None,
+        plc_move_timeout_secs: float = 60.0,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._arcl_client = arcl_client
+        self._plc_tables = plc_tables or {}
+        self._plc_heights = plc_heights or {}
+        self._plc_move_timeout_secs = plc_move_timeout_secs
 
     @property
     def arcl_client(self) -> ArclClient:
         return self._arcl_client
+
+    @property
+    def plc_tables(self) -> dict[str, TablePlc]:
+        return self._plc_tables
+
+    @property
+    def plc_heights(self) -> dict[str, dict[str, int]]:
+        return self._plc_heights
+
+    @property
+    def plc_move_timeout_secs(self) -> float:
+        return self._plc_move_timeout_secs
 
 
 # ---------------------------------------------------------------------------
@@ -501,6 +527,64 @@ class WaitForMacroCompletionNode(BehaviorTree):
 
 
 # ---------------------------------------------------------------------------
+# PLC legs — workbench lifting columns (single node: command + confirm)
+# ---------------------------------------------------------------------------
+
+
+class PlcLegsNode(BehaviorTree):
+    """Moves a workbench's lifting columns to a target height and blocks
+    until the PLC confirms.
+
+    One node for command + wait: TablePlc.move_to_height() runs the whole
+    edge-triggered handshake and releases g_xExecuteMove on any exit, so
+    cancellation (mission abort/pause) aborts the PLC move by design. On
+    resume the node re-executes and re-issues the move — idempotent thanks
+    to the PLC's deadband.
+    """
+
+    def __init__(
+        self,
+        context: ArclBehaviorTreeBuilderContext,
+        table_id: str,
+        target_mm: int,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._plc_tables = context.plc_tables
+        self._timeout_secs = context.plc_move_timeout_secs
+        self._table_id = table_id
+        self._target_mm = target_mm
+        self._shared_memory = context.shared_memory
+        self._shared_memory.add(SharedMemoryKeys.ARCL_ERROR_MESSAGE, None)
+
+    async def _execute(self):
+        plc = self._plc_tables.get(self._table_id)
+        if plc is None:
+            error_msg = f"no PLC configured for table '{self._table_id}'"
+            self._shared_memory.set(SharedMemoryKeys.ARCL_ERROR_MESSAGE, error_msg)
+            raise RuntimeError(error_msg)
+        logger.info("PLC legs: table %s to %d mm", self._table_id, self._target_mm)
+        try:
+            await plc.move_to_height(self._target_mm, timeout_secs=self._timeout_secs)
+        except PlcError as e:
+            error_msg = f"PLC legs failed for table '{self._table_id}': {e}"
+            logger.error(error_msg)
+            self._shared_memory.set(SharedMemoryKeys.ARCL_ERROR_MESSAGE, error_msg)
+            raise RuntimeError(error_msg) from e
+
+    def dump_object(self):
+        return {
+            "table_id": self._table_id,
+            "target_mm": self._target_mm,
+            **super().dump_object(),
+        }
+
+    @classmethod
+    def from_object(cls, context, table_id, target_mm, **kwargs):
+        return PlcLegsNode(context, table_id=table_id, target_mm=target_mm, **kwargs)
+
+
+# ---------------------------------------------------------------------------
 # Abort node — stops robot before reporting abort
 # ---------------------------------------------------------------------------
 
@@ -644,9 +728,47 @@ class ArclNodeFromStepBuilder(NodeFromStepBuilder):
             )
             return sequence
 
+        if action_id == "plc_legs":
+            return self._build_plc_legs(step, arguments)
+
         # Unknown action — fall back to default (cloud round-trip)
         logger.warning("Unknown action '%s' — falling back to cloud execution", action_id)
         return super().visit_run_action(step)
+
+    def _build_plc_legs(self, step: MissionStepRunAction, arguments: dict) -> BehaviorTree:
+        """Resolve a plc_legs step to a PlcLegsNode at build time so bad
+        input fails the mission before anything moves."""
+        table_id = arguments.get("table") or arguments.get("--table", "")
+        action = arguments.get("action") or arguments.get("--action", "")
+        height_arg = arguments.get("height_mm") or arguments.get("--height_mm")
+        if not table_id:
+            raise RuntimeError("plc_legs action missing 'table' argument")
+        if table_id not in self._arcl_context.plc_tables:
+            raise RuntimeError(
+                f"unknown table '{table_id}' — configured tables: "
+                f"{sorted(self._arcl_context.plc_tables) or 'none'}"
+            )
+        if height_arg is not None:
+            target_mm = int(height_arg)
+        else:
+            height_key = _PLC_ACTION_HEIGHT_KEY.get(action)
+            if height_key is None:
+                raise RuntimeError(
+                    f"plc_legs needs action retract|extend or height_mm (got action={action!r})"
+                )
+            heights = self._arcl_context.plc_heights.get(table_id, {})
+            if height_key not in heights:
+                raise RuntimeError(
+                    f"no '{height_key}' height configured for table '{table_id}' "
+                    f"(configured: {sorted(heights) or 'none'})"
+                )
+            target_mm = heights[height_key]
+        return PlcLegsNode(
+            self._arcl_context,
+            table_id=table_id,
+            target_mm=target_mm,
+            label=step.label or f"PLC legs {action or f'{target_mm} mm'} ({table_id})",
+        )
 
 
 # Register node types for serialization/deserialization (crash recovery)
@@ -658,6 +780,7 @@ arcl_node_types = [
     ArclExecuteMacroNode,
     WaitForArclCompletionNode,
     WaitForMacroCompletionNode,
+    PlcLegsNode,
     ArclMissionAbortedNode,
 ]
 register_accepted_node_types(arcl_node_types)

@@ -204,6 +204,9 @@ class OmronArclConnector(Connector):
             arcl_client=self._arcl,
             database_file=cfg.mission_database_file,
             on_cloud_resume=self._resume_last_goal,
+            plc_tables=self._plc_tables,
+            plc_heights=self._plc_heights,
+            plc_move_timeout_secs=self._plc_move_timeout_secs,
         )
 
     # -- Lifecycle ---------------------------------------------------------

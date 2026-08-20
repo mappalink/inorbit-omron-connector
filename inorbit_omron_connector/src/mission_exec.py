@@ -46,14 +46,25 @@ class ArclWorkerPool(WorkerPool):
         arcl_client: ArclClient,
         *args,
         on_cloud_resume: Callable[[], Awaitable[None]] | None = None,
+        plc_tables: dict | None = None,
+        plc_heights: dict | None = None,
+        plc_move_timeout_secs: float = 60.0,
         **kwargs,
     ):
         self._arcl = arcl_client
         self._on_cloud_resume = on_cloud_resume
+        self._plc_tables = plc_tables or {}
+        self._plc_heights = plc_heights or {}
+        self._plc_move_timeout_secs = plc_move_timeout_secs
         super().__init__(behavior_tree_builder=ArclTreeBuilder(), *args, **kwargs)
 
     def create_builder_context(self) -> ArclBehaviorTreeBuilderContext:
-        return ArclBehaviorTreeBuilderContext(arcl_client=self._arcl)
+        return ArclBehaviorTreeBuilderContext(
+            arcl_client=self._arcl,
+            plc_tables=self._plc_tables,
+            plc_heights=self._plc_heights,
+            plc_move_timeout_secs=self._plc_move_timeout_secs,
+        )
 
     async def pause_mission(self, mission_id):
         # Always send block driving to stop the robot, even if the mission
@@ -115,11 +126,17 @@ class OmronMissionExecutor:
         arcl_client: ArclClient,
         database_file: str | None = None,
         on_cloud_resume: Callable[[], Awaitable[None]] | None = None,
+        plc_tables: dict | None = None,
+        plc_heights: dict | None = None,
+        plc_move_timeout_secs: float = 60.0,
     ):
         self._robot_id = robot_id
         self._inorbit_api = inorbit_api
         self._arcl_client = arcl_client
         self._on_cloud_resume = on_cloud_resume
+        self._plc_tables = plc_tables or {}
+        self._plc_heights = plc_heights or {}
+        self._plc_move_timeout_secs = plc_move_timeout_secs
         if database_file:
             if database_file == "dummy":
                 self._database_file = "dummy"
@@ -139,6 +156,9 @@ class OmronMissionExecutor:
             api=self._inorbit_api,
             db=db,
             on_cloud_resume=self._on_cloud_resume,
+            plc_tables=self._plc_tables,
+            plc_heights=self._plc_heights,
+            plc_move_timeout_secs=self._plc_move_timeout_secs,
         )
         await self._worker_pool.start()
         self._initialized = True
