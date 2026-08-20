@@ -134,8 +134,8 @@ async def test_move_to_height_completes_and_releases_execute(fake_plc):
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("_fast_asyncio_sleep")
 async def test_move_within_deadband_completes_immediately(fake_plc):
+    # Fake PLC's current height starts at 800 — target equals it
     table = make_table(deadband_mm=10)
-    fake_plc  # current height starts at 800
     await table.move_to_height(800, timeout_secs=30)
 
 
