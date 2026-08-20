@@ -32,6 +32,22 @@ common:
   # Edge executor mission persistence (optional, defaults to missions_<robot_id>.db)
   # mission_database_file: "/data/missions.db"
 
+  # Workbench lifting-column PLCs (Beckhoff TwinCAT over ADS) for table
+  # transport missions. plc_client_ams_net_id is the identity this connector
+  # declares — it must equal the client AmsNetId in the static ADS route on
+  # each PLC. Heights are per-workbench mission parameters (mm).
+  # plc_client_ams_net_id: "10.102.0.18.1.1"
+  # plc_deadband_mm: 10           # match the PLC's deadband
+  # plc_move_timeout_secs: 60.0
+  # plc_check_position_valid: false  # enable once g_xPositionValid exists
+  # plc_tables:
+  #   wb1:
+  #     ip: "10.102.x.y"
+  #     ams_net_id: "10.102.x.y.1.1"
+  #     heights:
+  #       retracted: 800
+  #       pickup: 1131
+
 omron-hd1500:
   robot_name: "Omron HD1500"
   arcl_host: "10.200.0.2"

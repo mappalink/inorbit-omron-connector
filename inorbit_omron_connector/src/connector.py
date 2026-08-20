@@ -26,6 +26,7 @@ from .config.models import ConnectorConfig
 from .arcl_client import ArclClient
 from .goal_tracker import GoalTracker
 from .mission_exec import OmronMissionExecutor
+from .plc_client import PlcError, TablePlc, declare_client_ams_net_id
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,13 @@ _NUMERIC_FIELDS: set[str] = {
 
 # ARCL fields handled separately (not published as key-values)
 _SKIP_FIELDS: set[str] = {"Location"}
+
+# plc_legs --action → named height in TablePlcConfig.heights
+_PLC_ACTION_HEIGHT_KEY = {"retract": "retracted", "extend": "pickup"}
+# Telemetry cycles to skip a table PLC after a failed poll (~seconds at 1 Hz)
+_PLC_POLL_BACKOFF_CYCLES = 15
+# Max seconds a telemetry poll may spend on one PLC before treating it offline
+_PLC_POLL_TIMEOUT = 3.0
 
 
 def _to_snake_case(name: str) -> str:
@@ -169,6 +177,24 @@ class OmronArclConnector(Connector):
         # cancels the active goal, so resume must re-send it.
         self._last_nav_goal: str | None = None
         self._last_nav_point: tuple[int, int, int] | None = None
+        # Workbench lifting-column PLCs (table transport missions)
+        self._plc_tables: dict[str, TablePlc] = {
+            table_id: TablePlc(
+                ip=table_cfg.ip,
+                ams_net_id=table_cfg.ams_net_id,
+                deadband_mm=cfg.plc_deadband_mm,
+                check_position_valid=cfg.plc_check_position_valid,
+            )
+            for table_id, table_cfg in cfg.plc_tables.items()
+        }
+        self._plc_heights = {tid: t.heights for tid, t in cfg.plc_tables.items()}
+        self._plc_move_timeout_secs = cfg.plc_move_timeout_secs
+        self._plc_poll_skip: dict[str, int] = {}
+        if self._plc_tables and cfg.plc_client_ams_net_id:
+            try:
+                declare_client_ams_net_id(cfg.plc_client_ams_net_id)
+            except Exception as e:
+                logger.error("Failed to declare client AmsNetId: %s", e)
         self._mission_executor = OmronMissionExecutor(
             robot_id=robot_id,
             inorbit_api=MissionInOrbitAPI(
@@ -204,12 +230,19 @@ class OmronArclConnector(Connector):
     async def _disconnect(self) -> None:
         await self._mission_executor.shutdown()
         await self._arcl.disconnect()
+        for plc in self._plc_tables.values():
+            await plc.close()
         logger.info("Disconnected from Omron ARCL")
 
     # -- Main loop (~1 Hz) ------------------------------------------------
 
     @override
     async def _execution_loop(self) -> None:
+        # Table PLCs are independent machines — publish their state even
+        # when the robot itself is unreachable.
+        if self._plc_tables:
+            await self._publish_plc_telemetry()
+
         if not self._arcl.is_connected():
             logger.warning("ARCL not connected, skipping telemetry cycle")
             return
@@ -304,6 +337,38 @@ class OmronArclConnector(Connector):
         # Query laser scans and publish to InOrbit
         if self._laser_names:
             await self._publish_lasers(x_mm, y_mm, x_m, y_m, yaw_rad)
+
+    async def _publish_plc_telemetry(self) -> None:
+        """Publish per-table PLC state as key-values (plc_<table>_*).
+
+        A failed poll marks the table offline and backs off for
+        ``_PLC_POLL_BACKOFF_CYCLES`` cycles so an unreachable PLC cannot
+        stall the ~1 Hz robot telemetry loop.
+        """
+        for table_id, plc in self._plc_tables.items():
+            skip = self._plc_poll_skip.get(table_id, 0)
+            if skip > 0:
+                self._plc_poll_skip[table_id] = skip - 1
+                continue
+            try:
+                state = await asyncio.wait_for(plc.read_state(), timeout=_PLC_POLL_TIMEOUT)
+            except (PlcError, TimeoutError) as e:
+                logger.debug("PLC %s poll failed: %s", table_id, e)
+                self._plc_poll_skip[table_id] = _PLC_POLL_BACKOFF_CYCLES
+                self.publish_key_values(**{f"plc_{table_id}_online": False})
+                continue
+            kv: dict[str, str | float | bool] = {
+                f"plc_{table_id}_online": True,
+                f"plc_{table_id}_height_mm": float(state.height_mm),
+                f"plc_{table_id}_busy": state.busy,
+                f"plc_{table_id}_done": state.done,
+                f"plc_{table_id}_error": state.error,
+                f"plc_{table_id}_error_code": float(state.error_code),
+                f"plc_{table_id}_status": state.status_text,
+            }
+            if state.position_valid is not None:
+                kv[f"plc_{table_id}_position_valid"] = state.position_valid
+            self.publish_key_values(**kv)
 
     def _publish_mission_tracking(self, payload: dict) -> None:
         """Publish mission_tracking as an event (matches MiR connector pattern)."""
@@ -432,6 +497,9 @@ class OmronArclConnector(Connector):
                 logger.info("Sent executeMacro %s", macro_name)
                 await self._wait_for_macro_completion(macro_name, result_fn)
 
+            elif script_name == "plc_legs":
+                await self._handle_plc_legs(script_args, result_fn)
+
             elif script_name == "stop":
                 abort_payload = self._goal_tracker.on_stop()
                 if abort_payload is not None:
@@ -464,6 +532,54 @@ class OmronArclConnector(Connector):
         except Exception as e:
             logger.error("Custom command '%s' failed: %s", script_name, e)
             result_fn(CommandResultCode.FAILURE)
+
+    def _resolve_plc_move(self, script_args: dict) -> tuple[TablePlc, int, str]:
+        """Resolve (client, target height, description) for a plc_legs command.
+
+        Raises ValueError with an operator-readable message on bad input.
+        """
+        table_id = script_args.get("--table") or script_args.get("table")
+        action = script_args.get("--action") or script_args.get("action")
+        height_arg = script_args.get("--height_mm") or script_args.get("height_mm")
+
+        if not table_id:
+            raise ValueError("plc_legs missing --table argument")
+        plc = self._plc_tables.get(table_id)
+        if plc is None:
+            raise ValueError(
+                f"unknown table '{table_id}' — configured tables: "
+                f"{sorted(self._plc_tables) or 'none'}"
+            )
+        if height_arg is not None:
+            return plc, int(height_arg), f"height {height_arg} mm"
+        height_key = _PLC_ACTION_HEIGHT_KEY.get(action or "")
+        if height_key is None:
+            raise ValueError(
+                f"plc_legs needs --action retract|extend or --height_mm (got action={action!r})"
+            )
+        heights = self._plc_heights.get(table_id, {})
+        if height_key not in heights:
+            raise ValueError(
+                f"no '{height_key}' height configured for table '{table_id}' "
+                f"(configured: {sorted(heights) or 'none'})"
+            )
+        return plc, heights[height_key], action
+
+    async def _handle_plc_legs(self, script_args: dict, result_fn):
+        """Move a workbench's lifting columns and block until the PLC confirms."""
+        try:
+            plc, target_mm, description = self._resolve_plc_move(script_args)
+        except ValueError as e:
+            logger.error("plc_legs: %s", e)
+            result_fn(CommandResultCode.FAILURE, execution_status_details=str(e))
+            return
+        try:
+            await plc.move_to_height(target_mm, timeout_secs=self._plc_move_timeout_secs)
+            logger.info("plc_legs %s completed (%d mm)", description, target_mm)
+            result_fn(CommandResultCode.SUCCESS)
+        except PlcError as e:
+            logger.error("plc_legs %s failed: %s", description, e)
+            result_fn(CommandResultCode.FAILURE, execution_status_details=str(e))
 
     async def _wait_for_dock_completion(self, action: str, result_fn):
         """Poll ARCL status until dock/undock completes, then call result_fn."""

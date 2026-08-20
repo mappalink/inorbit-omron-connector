@@ -47,6 +47,13 @@ def connector():
         instance._last_nav_goal = None
         instance._last_nav_point = None
 
+        # Workbench PLC integration — one mocked table
+        mock_plc = AsyncMock()
+        instance._plc_tables = {"wb1": mock_plc}
+        instance._plc_heights = {"wb1": {"retracted": 800, "pickup": 1131}}
+        instance._plc_move_timeout_secs = 60.0
+        instance._plc_poll_skip = {}
+
         yield instance
 
 
@@ -249,3 +256,94 @@ class TestExecuteMacro:
 
         connector._arcl.execute_macro.assert_awaited_once_with(macro)
         result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
+
+
+# -- plc_legs (workbench lifting columns) -------------------------------------
+
+
+class TestPlcLegs:
+    @pytest.mark.asyncio
+    async def test_retract_resolves_configured_height(self, connector, options, result_fn):
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND,
+            ["plc_legs", ["--action", "retract", "--table", "wb1"]],
+            options,
+        )
+
+        connector._plc_tables["wb1"].move_to_height.assert_awaited_once_with(800, timeout_secs=60.0)
+        result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
+
+    @pytest.mark.asyncio
+    async def test_extend_resolves_pickup_height(self, connector, options, result_fn):
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND,
+            ["plc_legs", ["--action", "extend", "--table", "wb1"]],
+            options,
+        )
+
+        connector._plc_tables["wb1"].move_to_height.assert_awaited_once_with(
+            1131, timeout_secs=60.0
+        )
+        result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
+
+    @pytest.mark.asyncio
+    async def test_explicit_height_overrides_action(self, connector, options, result_fn):
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND,
+            ["plc_legs", ["--table", "wb1", "--height_mm", "950"]],
+            options,
+        )
+
+        connector._plc_tables["wb1"].move_to_height.assert_awaited_once_with(950, timeout_secs=60.0)
+        result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
+
+    @pytest.mark.asyncio
+    async def test_edge_arg_form_without_prefix(self, connector, options, result_fn):
+        """Edge MissionDefinition steps pass arguments without the `--` prefix."""
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND,
+            ["plc_legs", ["action", "retract", "table", "wb1"]],
+            options,
+        )
+
+        connector._plc_tables["wb1"].move_to_height.assert_awaited_once_with(800, timeout_secs=60.0)
+        result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
+
+    @pytest.mark.asyncio
+    async def test_unknown_table_fails_with_details(self, connector, options, result_fn):
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND,
+            ["plc_legs", ["--action", "retract", "--table", "nope"]],
+            options,
+        )
+
+        connector._plc_tables["wb1"].move_to_height.assert_not_awaited()
+        assert result_fn.call_args[0][0] == CommandResultCode.FAILURE
+        assert "unknown table" in result_fn.call_args[1]["execution_status_details"]
+
+    @pytest.mark.asyncio
+    async def test_missing_action_and_height_fails(self, connector, options, result_fn):
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND,
+            ["plc_legs", ["--table", "wb1"]],
+            options,
+        )
+
+        assert result_fn.call_args[0][0] == CommandResultCode.FAILURE
+
+    @pytest.mark.asyncio
+    async def test_plc_error_surfaces_details(self, connector, options, result_fn):
+        from inorbit_omron_connector.src.plc_client import PlcError
+
+        connector._plc_tables["wb1"].move_to_height.side_effect = PlcError(
+            "PLC has a latched error (code 7): 'E-stop open'"
+        )
+
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND,
+            ["plc_legs", ["--action", "extend", "--table", "wb1"]],
+            options,
+        )
+
+        assert result_fn.call_args[0][0] == CommandResultCode.FAILURE
+        assert "E-stop open" in result_fn.call_args[1]["execution_status_details"]
