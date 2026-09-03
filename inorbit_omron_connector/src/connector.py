@@ -35,7 +35,10 @@ BLOCK_NAME = "InOrbit"
 
 # ARCL status prefixes for dock/undock completion polling
 _DOCK_ACTIVE_PREFIXES = ("Docking", "Undocking", "Going to", "Driving to")
-_DOCK_SUCCESS_PREFIXES = ("Parked", "Idle", "Arrived at")
+# "Stopped" is where ARCL settles after a successful undock (observed
+# 2026-09-03). This list is used only by the dock/undock wait, never by
+# navigation, so accepting it here cannot mask an interrupted drive.
+_DOCK_SUCCESS_PREFIXES = ("Parked", "Idle", "Arrived at", "Stopped")
 _DOCK_FAILURE_PREFIXES = ("Failed to get to", "Failed going to")
 _DOCK_POLL_INTERVAL = 1.0
 _DOCK_TIMEOUT = 120.0

@@ -65,6 +65,15 @@ _SUCCESS_PREFIXES = frozenset(
     }
 )
 
+# Dock and undock finish in a state navigation never treats as success.
+# After `undock` ARCL settles on "Stopped": the robot has left the charger and
+# is standing still. That is a completion here, but for a goto it would mean an
+# interrupted drive, so "Stopped" stays out of _SUCCESS_PREFIXES and is only
+# accepted on dock/undock steps.
+# Observed 2026-09-03: undock moved the robot 0.76 m off the dock, Status became
+# "Stopped", and the step timed out after 60 s and reported failure.
+_DOCK_SUCCESS_PREFIXES = frozenset(_SUCCESS_PREFIXES | {"Stopped"})
+
 # ARCL Status values that indicate failure
 _FAILURE_PREFIXES = frozenset(
     {
@@ -150,12 +159,14 @@ class WaitForArclCompletionNode(BehaviorTree):
         self,
         context: ArclBehaviorTreeBuilderContext,
         timeout_secs: Optional[float] = None,
+        success_prefixes: Optional[frozenset] = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self._arcl = context.arcl_client
         self._shared_memory = context.shared_memory
         self._timeout_secs = timeout_secs
+        self._success_prefixes = frozenset(success_prefixes or _SUCCESS_PREFIXES)
 
         self._shared_memory.add(SharedMemoryKeys.ARCL_ERROR_MESSAGE, None)
         self._shared_memory.add(SharedMemoryKeys.ARCL_PENDING_NAV, None)
@@ -214,7 +225,7 @@ class WaitForArclCompletionNode(BehaviorTree):
             omron_status = status.get("Status", "") if status else ""
             logger.debug("ARCL cached status: %s", omron_status)
 
-            if any(omron_status.startswith(p) for p in _SUCCESS_PREFIXES):
+            if any(omron_status.startswith(p) for p in self._success_prefixes):
                 logger.info("ARCL task completed: %s", omron_status)
                 return
 
@@ -230,11 +241,17 @@ class WaitForArclCompletionNode(BehaviorTree):
     def dump_object(self):
         obj = super().dump_object()
         obj["timeout_secs"] = self._timeout_secs
+        obj["success_prefixes"] = sorted(self._success_prefixes)
         return obj
 
     @classmethod
-    def from_object(cls, context, timeout_secs=None, **kwargs):
-        return WaitForArclCompletionNode(context, timeout_secs=timeout_secs, **kwargs)
+    def from_object(cls, context, timeout_secs=None, success_prefixes=None, **kwargs):
+        return WaitForArclCompletionNode(
+            context,
+            timeout_secs=timeout_secs,
+            success_prefixes=frozenset(success_prefixes) if success_prefixes else None,
+            **kwargs,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -689,6 +706,7 @@ class ArclNodeFromStepBuilder(NodeFromStepBuilder):
                 WaitForArclCompletionNode(
                     self._arcl_context,
                     timeout_secs=step.timeout_secs,
+                    success_prefixes=_DOCK_SUCCESS_PREFIXES,
                     label="Wait for dock completion",
                 )
             )
@@ -701,6 +719,7 @@ class ArclNodeFromStepBuilder(NodeFromStepBuilder):
                 WaitForArclCompletionNode(
                     self._arcl_context,
                     timeout_secs=step.timeout_secs,
+                    success_prefixes=_DOCK_SUCCESS_PREFIXES,
                     label="Wait for undock completion",
                 )
             )

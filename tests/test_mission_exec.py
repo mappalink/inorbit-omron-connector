@@ -271,3 +271,80 @@ class TestArclWorkerPool:
             await pool.abort_mission("m-1")
 
         mock_arcl_client.stop.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Undock completion (regression, FM lab 2026-09-03)
+# ---------------------------------------------------------------------------
+
+
+class TestDockCompletionStatus:
+    """After a successful undock ARCL settles on "Stopped".
+
+    On 2026-09-03 at FM the robot undocked (it moved 0.76 m off the charger) but
+    the step waited the full timeout and reported failure, because "Stopped" was
+    in neither the success nor the failure list. It must count as completion for
+    dock/undock, and must NOT count for navigation, where it means an
+    interrupted drive.
+    """
+
+    @staticmethod
+    def _node(arcl, success_prefixes=None):
+        from inorbit_omron_connector.src.mission.behavior_tree import (
+            ArclBehaviorTreeBuilderContext,
+            WaitForArclCompletionNode,
+        )
+
+        context = MagicMock(spec=ArclBehaviorTreeBuilderContext)
+        context.arcl_client = arcl
+        context.shared_memory = MagicMock()
+        context.shared_memory.get = MagicMock(return_value=None)
+        return WaitForArclCompletionNode(
+            context, timeout_secs=5, success_prefixes=success_prefixes
+        )
+
+    @pytest.mark.asyncio
+    async def test_stopped_completes_an_undock(self, mock_arcl_client):
+        from inorbit_omron_connector.src.mission.behavior_tree import (
+            _DOCK_SUCCESS_PREFIXES,
+        )
+
+        mock_arcl_client.cached_status = {"Status": "Stopped"}
+        node = self._node(mock_arcl_client, _DOCK_SUCCESS_PREFIXES)
+        await node._execute()  # returns instead of raising on timeout
+
+    @pytest.mark.asyncio
+    async def test_stopped_does_not_complete_a_navigation(self, mock_arcl_client):
+        mock_arcl_client.cached_status = {"Status": "Stopped"}
+        node = self._node(mock_arcl_client)
+        with pytest.raises(RuntimeError, match="timed out"):
+            await node._execute()
+
+    @pytest.mark.asyncio
+    async def test_dock_failure_still_fails(self, mock_arcl_client):
+        from inorbit_omron_connector.src.mission.behavior_tree import (
+            _DOCK_SUCCESS_PREFIXES,
+        )
+
+        mock_arcl_client.cached_status = {"Status": "Failed to get to dock"}
+        node = self._node(mock_arcl_client, _DOCK_SUCCESS_PREFIXES)
+        with pytest.raises(RuntimeError, match="ARCL task failed"):
+            await node._execute()
+
+    def test_success_prefixes_survive_a_dump_load_round_trip(self, mock_arcl_client):
+        from inorbit_omron_connector.src.mission.behavior_tree import (
+            _DOCK_SUCCESS_PREFIXES,
+            WaitForArclCompletionNode,
+        )
+
+        node = self._node(mock_arcl_client, _DOCK_SUCCESS_PREFIXES)
+        dumped = node.dump_object()
+        context = MagicMock()
+        context.arcl_client = mock_arcl_client
+        context.shared_memory = MagicMock()
+        restored = WaitForArclCompletionNode.from_object(
+            context,
+            timeout_secs=dumped["timeout_secs"],
+            success_prefixes=dumped["success_prefixes"],
+        )
+        assert restored._success_prefixes == _DOCK_SUCCESS_PREFIXES
