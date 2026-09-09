@@ -43,7 +43,7 @@ common:
   # plc_tables:
   #   wb1:
   #     ip: "10.102.x.y"
-  #     ams_net_id: "10.102.x.y.1.1"
+  #     ams_net_id: "5.155.201.89.1.1"  # the TwinCAT system AmsNetId (read it off the IPC; NOT <ip>.1.1)
   #     heights:
   #       retracted: 800
   #       pickup: 1131

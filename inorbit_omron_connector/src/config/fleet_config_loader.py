@@ -32,6 +32,13 @@ OMRON_FIELDS = [
     "laser_range_min",
     "laser_range_max",
     "laser_n_points",
+    "mission_database_file",
+    # Workbench lifting-column PLCs (Beckhoff ADS)
+    "plc_tables",
+    "plc_client_ams_net_id",
+    "plc_deadband_mm",
+    "plc_move_timeout_secs",
+    "plc_check_position_valid",
 ]
 
 
