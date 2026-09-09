@@ -18,7 +18,7 @@ class TablePlcConfig(BaseModel):
     """
 
     ip: str
-    ams_net_id: str  # PLC AmsNetId (usually <ip>.1.1, confirm on the machine)
+    ams_net_id: str  # TwinCAT system AmsNetId (read it off the IPC; it is NOT derived from the IP)
     heights: dict[str, int] = {}  # named heights in mm, e.g. retracted: 800, pickup: 1131
 
 

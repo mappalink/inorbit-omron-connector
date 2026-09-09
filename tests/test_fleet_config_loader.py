@@ -88,3 +88,36 @@ robot-x:
     p.write_text(yaml_content)
     cfg = get_robot_config(str(p), "robot-x")
     assert cfg["connector_config"]["arcl_password"] == "expanded-pass"
+
+
+def test_plc_and_mission_db_fields_reach_connector_config(tmp_path):
+    yaml_content = """\
+common:
+  arcl_password: secret
+  mission_database_file: /app/data/missions.db
+  plc_client_ams_net_id: "10.102.0.18.1.1"
+  plc_deadband_mm: 15
+  plc_tables:
+    wb1:
+      ip: "10.102.180.41"
+      ams_net_id: "5.155.201.89.1.1"
+      heights:
+        retracted: 800
+        pickup: 1131
+
+omron-1:
+  arcl_host: "10.102.180.30"
+"""
+    p = tmp_path / "fleet.yaml"
+    p.write_text(yaml_content)
+    cfg = get_robot_config(str(p), "omron-1")
+
+    cc = cfg["connector_config"]
+    assert cc["mission_database_file"] == "/app/data/missions.db"
+    assert cc["plc_client_ams_net_id"] == "10.102.0.18.1.1"
+    assert cc["plc_deadband_mm"] == 15
+    assert cc["plc_tables"]["wb1"]["ams_net_id"] == "5.155.201.89.1.1"
+    assert cc["plc_tables"]["wb1"]["heights"]["pickup"] == 1131
+    # Not left behind at the top level (ConnectorConfig would reject/ignore them)
+    for key in ("mission_database_file", "plc_tables", "plc_client_ams_net_id"):
+        assert key not in cfg
