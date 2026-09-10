@@ -117,7 +117,7 @@ class ArclBehaviorTreeBuilderContext(BehaviorTreeBuilderContext):
         arcl_client: ArclClient,
         plc_tables: dict[str, TablePlc] | None = None,
         plc_heights: dict[str, dict[str, int]] | None = None,
-        plc_move_timeout_secs: float = 120.0,
+        plc_move_timeout_secs: float = 300.0,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -747,7 +747,9 @@ class ArclNodeFromStepBuilder(NodeFromStepBuilder):
             )
             return sequence
 
-        if action_id == "plc_legs":
+        # The button id runs locally too: a mission must wait for the legs to
+        # arrive, while the button's cloud path reports as soon as they start.
+        if action_id in ("plc_legs", "omron-plc-legs"):
             return self._build_plc_legs(step, arguments)
 
         # Unknown action — fall back to default (cloud round-trip)

@@ -38,6 +38,7 @@ OMRON_FIELDS = [
     "plc_client_ams_net_id",
     "plc_deadband_mm",
     "plc_move_timeout_secs",
+    "plc_stall_timeout_secs",
     "plc_check_position_valid",
 ]
 

@@ -123,3 +123,19 @@ class TestPlcLegsNodeExecute:
         )
         assert restored._table_id == "wb1"
         assert restored._target_mm == 800
+
+
+def test_button_action_id_runs_locally_and_waits():
+    """omron-plc-legs in a mission must block like plc_legs, not take the
+    button's report-on-start cloud path."""
+    builder = ArclNodeFromStepBuilder(make_context())
+    step = MissionStepRunAction(
+        label="legs",
+        runAction={
+            "actionId": "omron-plc-legs",
+            "arguments": {"--table": "wb1", "--action": "retract"},
+        },
+    )
+    node = builder.visit_run_action(step)
+    assert isinstance(node, PlcLegsNode)
+    assert node._target_mm == 800
