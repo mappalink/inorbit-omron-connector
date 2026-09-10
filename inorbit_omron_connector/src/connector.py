@@ -91,7 +91,13 @@ _NUMERIC_FIELDS: set[str] = {
 _SKIP_FIELDS: set[str] = {"Location"}
 
 # plc_legs --action → named height in TablePlcConfig.heights
-_PLC_ACTION_HEIGHT_KEY = {"retract": "retracted", "extend": "pickup"}
+_PLC_ACTION_HEIGHT_KEY = {
+    "retract": "retracted",
+    "extend": "pickup",
+    # plc_check --state
+    "retracted": "retracted",
+    "extended": "pickup",
+}
 # Telemetry cycles to skip a table PLC after a failed poll (~seconds at 1 Hz)
 _PLC_POLL_BACKOFF_CYCLES = 15
 # Max seconds a telemetry poll may spend on one PLC before treating it offline
@@ -517,6 +523,9 @@ class OmronArclConnector(Connector):
             elif script_name == "plc_legs":
                 await self._handle_plc_legs(script_args, result_fn)
 
+            elif script_name == "plc_check":
+                await self._handle_plc_check(script_args, result_fn)
+
             elif script_name == "stop":
                 abort_payload = self._goal_tracker.on_stop()
                 if abort_payload is not None:
@@ -556,7 +565,12 @@ class OmronArclConnector(Connector):
         Raises ValueError with an operator-readable message on bad input.
         """
         table_id = script_args.get("--table") or script_args.get("table")
-        action = script_args.get("--action") or script_args.get("action")
+        action = (
+            script_args.get("--action")
+            or script_args.get("action")
+            or script_args.get("--state")
+            or script_args.get("state")
+        )
         height_arg = script_args.get("--height_mm") or script_args.get("height_mm")
 
         if not table_id:
@@ -572,7 +586,8 @@ class OmronArclConnector(Connector):
         height_key = _PLC_ACTION_HEIGHT_KEY.get(action or "")
         if height_key is None:
             raise ValueError(
-                f"plc_legs needs --action retract|extend or --height_mm (got action={action!r})"
+                f"needs --action retract|extend, --state retracted|extended, or --height_mm "
+                f"(got {action!r})"
             )
         heights = self._plc_heights.get(table_id, {})
         if height_key not in heights:
@@ -666,6 +681,29 @@ class OmronArclConnector(Connector):
             self.publish_key_values(**{f"plc_{table_id}_last_move": outcome})
         except Exception as e:
             logger.warning("Could not publish plc_%s_last_move: %s", table_id, e)
+
+    async def _handle_plc_check(self, script_args: dict, result_fn):
+        """Verify, without moving anything, that a workbench stands at a height."""
+        try:
+            plc, target_mm, description = self._resolve_plc_move(script_args)
+            wait_secs = float(script_args.get("--wait_secs") or script_args.get("wait_secs") or 0)
+            if wait_secs < 0:
+                raise ValueError(f"wait_secs must be >= 0 (got {wait_secs})")
+        except ValueError as e:
+            logger.error("plc_check: %s", e)
+            result_fn(CommandResultCode.FAILURE, execution_status_details=str(e))
+            return
+        table_id = script_args.get("--table") or script_args.get("table")
+        try:
+            state = await plc.check_at_height(target_mm, wait_secs=wait_secs)
+        except PlcError as e:
+            msg = f"workbench '{table_id}' not {description}: {e}"
+            logger.error("plc_check: %s", msg)
+            result_fn(CommandResultCode.FAILURE, execution_status_details=msg)
+            return
+        msg = f"workbench '{table_id}' {description} at {state.height_mm} mm"
+        logger.info("plc_check: %s", msg)
+        result_fn(CommandResultCode.SUCCESS, execution_status_details=msg)
 
     async def _wait_for_dock_completion(self, action: str, result_fn):
         """Poll ARCL status until dock/undock completes, then call result_fn."""

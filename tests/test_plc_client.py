@@ -328,3 +328,71 @@ async def test_read_state_during_move_returns_move_snapshot(fake_plc):
     fake_plc["conn"].stuck = False
     await task
     assert table.is_moving is False
+
+
+@pytest.fixture()
+def _fast_settle(monkeypatch):
+    monkeypatch.setattr(plc_client, "_SETTLE_SECS", 0.05)
+
+
+def _record_writes(conn):
+    writes = []
+    original = conn.write_by_name
+
+    def recording(name, value):
+        writes.append((name, value))
+        return original(name, value)
+
+    conn.write_by_name = recording
+    return writes
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fast_asyncio_sleep", "_fast_settle")
+async def test_check_passes_at_height_without_writing(fake_plc):
+    table = make_table(deadband_mm=10)  # fake starts at 800 mm, idle
+    writes = _record_writes(fake_plc["conn"])
+    state = await table.check_at_height(800)
+    assert state.height_mm == 800
+    assert writes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fast_asyncio_sleep", "_fast_settle")
+async def test_check_fails_when_height_off(fake_plc):
+    table = make_table(deadband_mm=10)
+    writes = _record_writes(fake_plc["conn"])
+    with pytest.raises(PlcError, match="height is 800 mm, expected 1131"):
+        await table.check_at_height(1131)
+    assert writes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fast_asyncio_sleep", "_fast_settle")
+async def test_check_fails_on_latched_error(fake_plc):
+    table = make_table()
+    fake_plc["conn"].vars["GVL_HMI.g_xError"] = True
+    with pytest.raises(PlcError, match="latched error"):
+        await table.check_at_height(800)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fast_asyncio_sleep", "_fast_settle")
+async def test_check_fails_while_moving(fake_plc):
+    table = make_table()
+    fake_plc["conn"].vars["GVL_HMI.g_xBusy"] = True
+    with pytest.raises(PlcError, match="legs are moving"):
+        await table.check_at_height(800)
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fast_asyncio_sleep", "_fast_settle")
+async def test_check_waits_for_the_height(fake_plc):
+    table = make_table(deadband_mm=10)
+    task = asyncio.ensure_future(table.check_at_height(1131, wait_secs=5))
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert not task.done()
+    fake_plc["conn"].vars["GVL_HMI.g_nCurrentHeight"] = 1131
+    state = await task
+    assert state.height_mm == 1131

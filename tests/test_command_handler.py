@@ -405,3 +405,46 @@ class TestPlcLegs:
         connector._plc_tables["wb1"].move_to_height.assert_not_awaited()
         assert result_fn.call_args[0][0] == CommandResultCode.FAILURE
         assert "already moving" in result_fn.call_args[1]["execution_status_details"]
+
+
+class TestPlcCheck:
+    @pytest.mark.asyncio
+    async def test_check_passes_and_never_moves(self, connector, options, result_fn):
+        from inorbit_omron_connector.src.plc_client import PlcState
+
+        plc = connector._plc_tables["wb1"]
+        plc.check_at_height.return_value = PlcState(1131, False, False, False, 0, "Idle")
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND,
+            ["plc_check", ["--table", "wb1", "--state", "extended", "--wait_secs", "5"]],
+            options,
+        )
+        plc.check_at_height.assert_awaited_once_with(1131, wait_secs=5.0)
+        plc.move_to_height.assert_not_awaited()
+        assert result_fn.call_args[0][0] == CommandResultCode.SUCCESS
+        assert "1131 mm" in result_fn.call_args[1]["execution_status_details"]
+
+    @pytest.mark.asyncio
+    async def test_check_failure_reports_reason(self, connector, options, result_fn):
+        from inorbit_omron_connector.src.plc_client import PlcError
+
+        plc = connector._plc_tables["wb1"]
+        plc.check_at_height.side_effect = PlcError("height is 799 mm, expected 1131 ± 10 mm")
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND,
+            ["plc_check", ["--table", "wb1", "--state", "extended"]],
+            options,
+        )
+        assert result_fn.call_args[0][0] == CommandResultCode.FAILURE
+        assert "799" in result_fn.call_args[1]["execution_status_details"]
+
+    @pytest.mark.asyncio
+    async def test_negative_wait_rejected(self, connector, options, result_fn):
+        plc = connector._plc_tables["wb1"]
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND,
+            ["plc_check", ["--table", "wb1", "--state", "extended", "--wait_secs", "-1"]],
+            options,
+        )
+        plc.check_at_height.assert_not_awaited()
+        assert result_fn.call_args[0][0] == CommandResultCode.FAILURE

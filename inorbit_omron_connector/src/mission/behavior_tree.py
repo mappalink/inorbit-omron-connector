@@ -40,7 +40,13 @@ from inorbit_omron_connector.src.plc_client import PlcError, TablePlc
 logger = logging.getLogger(__name__)
 
 # plc_legs action → named height in TablePlcConfig.heights (mirrors connector.py)
-_PLC_ACTION_HEIGHT_KEY = {"retract": "retracted", "extend": "pickup"}
+_PLC_ACTION_HEIGHT_KEY = {
+    "retract": "retracted",
+    "extend": "pickup",
+    # plc_check state
+    "retracted": "retracted",
+    "extended": "pickup",
+}
 
 # Polling interval for ARCL status checks
 _POLL_INTERVAL_SECS = 1.0
@@ -601,6 +607,68 @@ class PlcLegsNode(BehaviorTree):
         return PlcLegsNode(context, table_id=table_id, target_mm=target_mm, **kwargs)
 
 
+class PlcCheckNode(BehaviorTree):
+    """Verifies, without moving anything, that a workbench stands at a height.
+
+    FM's pickup step 3: the robot may only enter once the workbench is at
+    pickup height. Reads the PLC only (TablePlc.check_at_height) and fails
+    the mission, before the zone opens or the robot drives under, when the
+    PLC is unreachable, has an error, is moving, or the height is off.
+    Waits up to wait_secs for the height to be reached.
+    """
+
+    def __init__(
+        self,
+        context: ArclBehaviorTreeBuilderContext,
+        table_id: str,
+        target_mm: int,
+        wait_secs: float = 0.0,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self._plc_tables = context.plc_tables
+        self._table_id = table_id
+        self._target_mm = target_mm
+        self._wait_secs = wait_secs
+        self._shared_memory = context.shared_memory
+        self._shared_memory.add(SharedMemoryKeys.ARCL_ERROR_MESSAGE, None)
+
+    async def _execute(self):
+        plc = self._plc_tables.get(self._table_id)
+        if plc is None:
+            error_msg = f"no PLC configured for table '{self._table_id}'"
+            self._shared_memory.set(SharedMemoryKeys.ARCL_ERROR_MESSAGE, error_msg)
+            raise RuntimeError(error_msg)
+        logger.info(
+            "PLC check: table %s at %d mm (wait up to %.0fs)",
+            self._table_id,
+            self._target_mm,
+            self._wait_secs,
+        )
+        try:
+            state = await plc.check_at_height(self._target_mm, wait_secs=self._wait_secs)
+        except PlcError as e:
+            error_msg = f"workbench '{self._table_id}' not at {self._target_mm} mm: {e}"
+            logger.error(error_msg)
+            self._shared_memory.set(SharedMemoryKeys.ARCL_ERROR_MESSAGE, error_msg)
+            raise RuntimeError(error_msg) from e
+        logger.info("PLC check passed: table %s at %s mm", self._table_id, state.height_mm)
+
+    def dump_object(self):
+        return {
+            "table_id": self._table_id,
+            "target_mm": self._target_mm,
+            "wait_secs": self._wait_secs,
+            **super().dump_object(),
+        }
+
+    @classmethod
+    def from_object(cls, context, table_id, target_mm, wait_secs=0.0, **kwargs):
+        return PlcCheckNode(
+            context, table_id=table_id, target_mm=target_mm, wait_secs=wait_secs, **kwargs
+        )
+
+
 # ---------------------------------------------------------------------------
 # Abort node — stops robot before reporting abort
 # ---------------------------------------------------------------------------
@@ -747,6 +815,9 @@ class ArclNodeFromStepBuilder(NodeFromStepBuilder):
             )
             return sequence
 
+        if action_id == "plc_check":
+            return self._build_plc_check(step, arguments)
+
         # The button id runs locally too: a mission must wait for the legs to
         # arrive, while the button's cloud path reports as soon as they start.
         if action_id in ("plc_legs", "omron-plc-legs"):
@@ -756,14 +827,20 @@ class ArclNodeFromStepBuilder(NodeFromStepBuilder):
         logger.warning("Unknown action '%s' — falling back to cloud execution", action_id)
         return super().visit_run_action(step)
 
-    def _build_plc_legs(self, step: MissionStepRunAction, arguments: dict) -> BehaviorTree:
-        """Resolve a plc_legs step to a PlcLegsNode at build time so bad
-        input fails the mission before anything moves."""
+    def _resolve_table_target(self, arguments: dict, step_name: str) -> tuple[str, int, str]:
+        """Resolve (table id, target mm, description) for plc_legs / plc_check
+        steps at build time, so bad input fails the mission before anything moves."""
         table_id = arguments.get("table") or arguments.get("--table", "")
-        action = arguments.get("action") or arguments.get("--action", "")
+        action = (
+            arguments.get("action")
+            or arguments.get("--action")
+            or arguments.get("state")
+            or arguments.get("--state")
+            or ""
+        )
         height_arg = arguments.get("height_mm") or arguments.get("--height_mm")
         if not table_id:
-            raise RuntimeError("plc_legs action missing 'table' argument")
+            raise RuntimeError(f"{step_name} action missing 'table' argument")
         if table_id not in self._arcl_context.plc_tables:
             raise RuntimeError(
                 f"unknown table '{table_id}' — configured tables: "
@@ -771,24 +848,45 @@ class ArclNodeFromStepBuilder(NodeFromStepBuilder):
             )
         if height_arg is not None:
             target_mm = int(height_arg)
-        else:
-            height_key = _PLC_ACTION_HEIGHT_KEY.get(action)
-            if height_key is None:
-                raise RuntimeError(
-                    f"plc_legs needs action retract|extend or height_mm (got action={action!r})"
-                )
-            heights = self._arcl_context.plc_heights.get(table_id, {})
-            if height_key not in heights:
-                raise RuntimeError(
-                    f"no '{height_key}' height configured for table '{table_id}' "
-                    f"(configured: {sorted(heights) or 'none'})"
-                )
-            target_mm = heights[height_key]
+            return table_id, target_mm, action or f"{target_mm} mm"
+        height_key = _PLC_ACTION_HEIGHT_KEY.get(action)
+        if height_key is None:
+            options = (
+                "state retracted|extended" if step_name == "plc_check" else "action retract|extend"
+            )
+            raise RuntimeError(f"{step_name} needs {options} or height_mm (got action={action!r})")
+        heights = self._arcl_context.plc_heights.get(table_id, {})
+        if height_key not in heights:
+            raise RuntimeError(
+                f"no '{height_key}' height configured for table '{table_id}' "
+                f"(configured: {sorted(heights) or 'none'})"
+            )
+        return table_id, heights[height_key], action
+
+    def _build_plc_legs(self, step: MissionStepRunAction, arguments: dict) -> BehaviorTree:
+        table_id, target_mm, desc = self._resolve_table_target(arguments, "plc_legs")
         return PlcLegsNode(
             self._arcl_context,
             table_id=table_id,
             target_mm=target_mm,
-            label=step.label or f"PLC legs {action or f'{target_mm} mm'} ({table_id})",
+            label=step.label or f"PLC legs {desc} ({table_id})",
+        )
+
+    def _build_plc_check(self, step: MissionStepRunAction, arguments: dict) -> BehaviorTree:
+        table_id, target_mm, desc = self._resolve_table_target(arguments, "plc_check")
+        wait_arg = arguments.get("wait_secs") or arguments.get("--wait_secs") or 0
+        try:
+            wait_secs = float(wait_arg)
+        except (TypeError, ValueError):
+            raise RuntimeError(f"plc_check: invalid wait_secs {wait_arg!r}") from None
+        if wait_secs < 0:
+            raise RuntimeError(f"plc_check: wait_secs must be >= 0 (got {wait_secs})")
+        return PlcCheckNode(
+            self._arcl_context,
+            table_id=table_id,
+            target_mm=target_mm,
+            wait_secs=wait_secs,
+            label=step.label or f"Check workbench {table_id} {desc}",
         )
 
 
@@ -802,6 +900,7 @@ arcl_node_types = [
     WaitForArclCompletionNode,
     WaitForMacroCompletionNode,
     PlcLegsNode,
+    PlcCheckNode,
     ArclMissionAbortedNode,
 ]
 register_accepted_node_types(arcl_node_types)
