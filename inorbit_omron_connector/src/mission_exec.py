@@ -48,7 +48,7 @@ class ArclWorkerPool(WorkerPool):
         on_cloud_resume: Callable[[], Awaitable[None]] | None = None,
         plc_tables: dict | None = None,
         plc_heights: dict | None = None,
-        plc_move_timeout_secs: float = 120.0,
+        plc_move_timeout_secs: float = 300.0,
         **kwargs,
     ):
         self._arcl = arcl_client
@@ -128,7 +128,7 @@ class OmronMissionExecutor:
         on_cloud_resume: Callable[[], Awaitable[None]] | None = None,
         plc_tables: dict | None = None,
         plc_heights: dict | None = None,
-        plc_move_timeout_secs: float = 120.0,
+        plc_move_timeout_secs: float = 300.0,
     ):
         self._robot_id = robot_id
         self._inorbit_api = inorbit_api

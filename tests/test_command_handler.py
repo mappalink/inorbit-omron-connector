@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+import asyncio
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -49,10 +50,13 @@ def connector():
 
         # Workbench PLC integration — one mocked table
         mock_plc = AsyncMock()
+        mock_plc.is_moving = False
         instance._plc_tables = {"wb1": mock_plc}
         instance._plc_heights = {"wb1": {"retracted": 800, "pickup": 1131}}
         instance._plc_move_timeout_secs = 60.0
         instance._plc_poll_skip = {}
+        instance._plc_move_tasks = set()
+        instance.publish_key_values = MagicMock()
 
         yield instance
 
@@ -262,88 +266,142 @@ class TestExecuteMacro:
 
 
 class TestPlcLegs:
-    @pytest.mark.asyncio
-    async def test_retract_resolves_configured_height(self, connector, options, result_fn):
+    """Button path: SUCCESS once the PLC is moving; the move finishes in background."""
+
+    @staticmethod
+    async def _drain(connector):
+        if connector._plc_move_tasks:
+            await asyncio.gather(*connector._plc_move_tasks, return_exceptions=True)
+        await asyncio.sleep(0)  # let done-callbacks run
+
+    @staticmethod
+    async def _run(connector, options, args):
         await connector._inorbit_command_handler(
-            COMMAND_CUSTOM_COMMAND,
-            ["plc_legs", ["--action", "retract", "--table", "wb1"]],
-            options,
+            COMMAND_CUSTOM_COMMAND, ["plc_legs", args], options
         )
 
-        connector._plc_tables["wb1"].move_to_height.assert_awaited_once_with(800, timeout_secs=60.0)
-        result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
+    @pytest.mark.asyncio
+    async def test_retract_resolves_configured_height(self, connector, options, result_fn):
+        await self._run(connector, options, ["--action", "retract", "--table", "wb1"])
+        connector._plc_tables["wb1"].move_to_height.assert_awaited_once_with(
+            800, timeout_secs=60.0, started=ANY
+        )
+        assert result_fn.call_args[0][0] == CommandResultCode.SUCCESS
 
     @pytest.mark.asyncio
     async def test_extend_resolves_pickup_height(self, connector, options, result_fn):
-        await connector._inorbit_command_handler(
-            COMMAND_CUSTOM_COMMAND,
-            ["plc_legs", ["--action", "extend", "--table", "wb1"]],
-            options,
-        )
-
+        await self._run(connector, options, ["--action", "extend", "--table", "wb1"])
         connector._plc_tables["wb1"].move_to_height.assert_awaited_once_with(
-            1131, timeout_secs=60.0
+            1131, timeout_secs=60.0, started=ANY
         )
-        result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
+        assert result_fn.call_args[0][0] == CommandResultCode.SUCCESS
 
     @pytest.mark.asyncio
     async def test_explicit_height_overrides_action(self, connector, options, result_fn):
-        await connector._inorbit_command_handler(
-            COMMAND_CUSTOM_COMMAND,
-            ["plc_legs", ["--table", "wb1", "--height_mm", "950"]],
-            options,
+        await self._run(connector, options, ["--table", "wb1", "--height_mm", "950"])
+        connector._plc_tables["wb1"].move_to_height.assert_awaited_once_with(
+            950, timeout_secs=60.0, started=ANY
         )
-
-        connector._plc_tables["wb1"].move_to_height.assert_awaited_once_with(950, timeout_secs=60.0)
-        result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
 
     @pytest.mark.asyncio
     async def test_edge_arg_form_without_prefix(self, connector, options, result_fn):
         """Edge MissionDefinition steps pass arguments without the `--` prefix."""
-        await connector._inorbit_command_handler(
-            COMMAND_CUSTOM_COMMAND,
-            ["plc_legs", ["action", "retract", "table", "wb1"]],
-            options,
+        await self._run(connector, options, ["action", "retract", "table", "wb1"])
+        connector._plc_tables["wb1"].move_to_height.assert_awaited_once_with(
+            800, timeout_secs=60.0, started=ANY
         )
-
-        connector._plc_tables["wb1"].move_to_height.assert_awaited_once_with(800, timeout_secs=60.0)
-        result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
 
     @pytest.mark.asyncio
     async def test_unknown_table_fails_with_details(self, connector, options, result_fn):
-        await connector._inorbit_command_handler(
-            COMMAND_CUSTOM_COMMAND,
-            ["plc_legs", ["--action", "retract", "--table", "nope"]],
-            options,
-        )
-
+        await self._run(connector, options, ["--action", "retract", "--table", "nope"])
         connector._plc_tables["wb1"].move_to_height.assert_not_awaited()
         assert result_fn.call_args[0][0] == CommandResultCode.FAILURE
         assert "unknown table" in result_fn.call_args[1]["execution_status_details"]
 
     @pytest.mark.asyncio
     async def test_missing_action_and_height_fails(self, connector, options, result_fn):
-        await connector._inorbit_command_handler(
-            COMMAND_CUSTOM_COMMAND,
-            ["plc_legs", ["--table", "wb1"]],
-            options,
-        )
-
+        await self._run(connector, options, ["--table", "wb1"])
         assert result_fn.call_args[0][0] == CommandResultCode.FAILURE
 
     @pytest.mark.asyncio
-    async def test_plc_error_surfaces_details(self, connector, options, result_fn):
+    async def test_plc_error_before_start_surfaces_details(self, connector, options, result_fn):
         from inorbit_omron_connector.src.plc_client import PlcError
 
         connector._plc_tables["wb1"].move_to_height.side_effect = PlcError(
             "PLC has a latched error (code 7): 'E-stop open'"
         )
-
-        await connector._inorbit_command_handler(
-            COMMAND_CUSTOM_COMMAND,
-            ["plc_legs", ["--action", "extend", "--table", "wb1"]],
-            options,
-        )
-
+        await self._run(connector, options, ["--action", "extend", "--table", "wb1"])
         assert result_fn.call_args[0][0] == CommandResultCode.FAILURE
         assert "E-stop open" in result_fn.call_args[1]["execution_status_details"]
+
+    @pytest.mark.asyncio
+    async def test_reports_success_once_moving_and_finishes_in_background(
+        self, connector, options, result_fn
+    ):
+        gate = asyncio.Event()
+
+        async def move(target_mm, timeout_secs, started):
+            started.set()
+            await gate.wait()
+
+        connector._plc_tables["wb1"].move_to_height.side_effect = move
+        await self._run(connector, options, ["--action", "extend", "--table", "wb1"])
+
+        result_fn.assert_called_once()
+        assert result_fn.call_args[0][0] == CommandResultCode.SUCCESS
+        assert "started" in result_fn.call_args[1]["execution_status_details"]
+        assert len(connector._plc_move_tasks) == 1  # still moving
+
+        gate.set()
+        await self._drain(connector)
+        connector.publish_key_values.assert_called_with(plc_wb1_last_move="extend: at 1131 mm")
+        result_fn.assert_called_once()  # no second result after the move ends
+
+    @pytest.mark.asyncio
+    async def test_failure_after_start_is_published(self, connector, options, result_fn):
+        from inorbit_omron_connector.src.plc_client import PlcError
+
+        async def move(target_mm, timeout_secs, started):
+            started.set()
+            await asyncio.sleep(0.01)
+            raise PlcError("move to 1131 mm stalled: no progress for 20s")
+
+        connector._plc_tables["wb1"].move_to_height.side_effect = move
+        await self._run(connector, options, ["--action", "extend", "--table", "wb1"])
+        await self._drain(connector)
+
+        result_fn.assert_called_once()
+        assert result_fn.call_args[0][0] == CommandResultCode.SUCCESS
+        published = connector.publish_key_values.call_args[1]["plc_wb1_last_move"]
+        assert published.startswith("extend FAILED") and "stalled" in published
+
+    @pytest.mark.asyncio
+    async def test_not_started_in_time_fails_and_cancels_move(
+        self, connector, options, result_fn, monkeypatch
+    ):
+        from inorbit_omron_connector.src import connector as connector_module
+
+        monkeypatch.setattr(connector_module, "_PLC_START_TIMEOUT", 0.05)
+        seen = {}
+
+        async def move(target_mm, timeout_secs, started):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                seen["cancelled"] = True
+                raise
+
+        connector._plc_tables["wb1"].move_to_height.side_effect = move
+        await self._run(connector, options, ["--action", "retract", "--table", "wb1"])
+
+        assert result_fn.call_args[0][0] == CommandResultCode.FAILURE
+        assert "did not start" in result_fn.call_args[1]["execution_status_details"]
+        assert seen.get("cancelled") is True
+
+    @pytest.mark.asyncio
+    async def test_refuses_while_already_moving(self, connector, options, result_fn):
+        connector._plc_tables["wb1"].is_moving = True
+        await self._run(connector, options, ["--action", "retract", "--table", "wb1"])
+        connector._plc_tables["wb1"].move_to_height.assert_not_awaited()
+        assert result_fn.call_args[0][0] == CommandResultCode.FAILURE
+        assert "already moving" in result_fn.call_args[1]["execution_status_details"]

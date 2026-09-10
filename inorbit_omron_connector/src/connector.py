@@ -5,6 +5,7 @@
 """Omron ARCL connector — bridges Omron HD1500 ARCL to InOrbit Cloud."""
 
 import asyncio
+import contextlib
 import logging
 import math
 import re
@@ -95,6 +96,9 @@ _PLC_ACTION_HEIGHT_KEY = {"retract": "retracted", "extend": "pickup"}
 _PLC_POLL_BACKOFF_CYCLES = 15
 # Max seconds a telemetry poll may spend on one PLC before treating it offline
 _PLC_POLL_TIMEOUT = 3.0
+# Button (custom command) plc_legs reports SUCCESS once the PLC is moving;
+# it fails if the PLC has not started the move within this many seconds.
+_PLC_START_TIMEOUT = 10.0
 
 
 def _to_snake_case(name: str) -> str:
@@ -187,12 +191,15 @@ class OmronArclConnector(Connector):
                 ams_net_id=table_cfg.ams_net_id,
                 deadband_mm=cfg.plc_deadband_mm,
                 check_position_valid=cfg.plc_check_position_valid,
+                stall_secs=cfg.plc_stall_timeout_secs,
             )
             for table_id, table_cfg in cfg.plc_tables.items()
         }
         self._plc_heights = {tid: t.heights for tid, t in cfg.plc_tables.items()}
         self._plc_move_timeout_secs = cfg.plc_move_timeout_secs
         self._plc_poll_skip: dict[str, int] = {}
+        # Button-started moves finishing in the background
+        self._plc_move_tasks: set[asyncio.Task] = set()
         if self._plc_tables and cfg.plc_client_ams_net_id:
             try:
                 declare_client_ams_net_id(cfg.plc_client_ams_net_id)
@@ -236,6 +243,10 @@ class OmronArclConnector(Connector):
     async def _disconnect(self) -> None:
         await self._mission_executor.shutdown()
         await self._arcl.disconnect()
+        for task in list(self._plc_move_tasks):
+            task.cancel()  # releases g_xExecuteMove, which stops the legs
+        if self._plc_move_tasks:
+            await asyncio.gather(*self._plc_move_tasks, return_exceptions=True)
         for plc in self._plc_tables.values():
             await plc.close()
         logger.info("Disconnected from Omron ARCL")
@@ -572,20 +583,89 @@ class OmronArclConnector(Connector):
         return plc, heights[height_key], action
 
     async def _handle_plc_legs(self, script_args: dict, result_fn):
-        """Move a workbench's lifting columns and block until the PLC confirms."""
+        """Start a workbench leg move; report SUCCESS once the PLC is moving.
+
+        This is the button path. The InOrbit UI stops waiting for a result
+        after ~30 s while a full stroke takes ~55 s, so the result means
+        "started" (the MiR connector's pattern). The move finishes in the
+        background; its outcome goes to the log and to plc_<table>_last_move.
+        Missions never come through here: the edge executor runs plc_legs and
+        omron-plc-legs steps as PlcLegsNode, which waits until the legs arrived.
+        """
         try:
             plc, target_mm, description = self._resolve_plc_move(script_args)
         except ValueError as e:
             logger.error("plc_legs: %s", e)
             result_fn(CommandResultCode.FAILURE, execution_status_details=str(e))
             return
+        table_id = script_args.get("--table") or script_args.get("table")
+        if plc.is_moving:
+            msg = f"workbench '{table_id}' is already moving; wait for it to finish"
+            logger.warning("plc_legs: %s", msg)
+            result_fn(CommandResultCode.FAILURE, execution_status_details=msg)
+            return
+
+        started = asyncio.Event()
+        move = asyncio.create_task(
+            plc.move_to_height(target_mm, timeout_secs=self._plc_move_timeout_secs, started=started)
+        )
+        self._plc_move_tasks.add(move)
+        move.add_done_callback(self._plc_move_tasks.discard)
+        move.add_done_callback(
+            lambda task: self._on_plc_move_done(table_id, description, target_mm, task)
+        )
+        started_wait = asyncio.create_task(started.wait())
         try:
-            await plc.move_to_height(target_mm, timeout_secs=self._plc_move_timeout_secs)
-            logger.info("plc_legs %s completed (%d mm)", description, target_mm)
-            result_fn(CommandResultCode.SUCCESS)
-        except PlcError as e:
-            logger.error("plc_legs %s failed: %s", description, e)
-            result_fn(CommandResultCode.FAILURE, execution_status_details=str(e))
+            await asyncio.wait(
+                {move, started_wait},
+                timeout=_PLC_START_TIMEOUT,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            started_wait.cancel()
+
+        if move.done():
+            error = None if move.cancelled() else move.exception()
+            if move.cancelled() or error is not None:
+                details = str(error) if error is not None else "move cancelled"
+                result_fn(CommandResultCode.FAILURE, execution_status_details=details)
+            else:
+                result_fn(
+                    CommandResultCode.SUCCESS,
+                    execution_status_details=f"{description}: at {target_mm} mm",
+                )
+            return
+        if started.is_set():
+            logger.info(
+                "plc_legs %s started (%d mm), finishing in background", description, target_mm
+            )
+            result_fn(
+                CommandResultCode.SUCCESS,
+                execution_status_details=f"{description} started: moving to {target_mm} mm",
+            )
+            return
+        move.cancel()  # releases g_xExecuteMove
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await move
+        msg = f"PLC did not start moving to {target_mm} mm within {_PLC_START_TIMEOUT:.0f}s"
+        logger.error("plc_legs %s: %s", description, msg)
+        result_fn(CommandResultCode.FAILURE, execution_status_details=msg)
+
+    def _on_plc_move_done(self, table_id, description, target_mm, task: asyncio.Task) -> None:
+        """Log and publish how a button-started move ended."""
+        if task.cancelled():
+            outcome = f"{description} cancelled"
+            logger.warning("plc_legs %s", outcome)
+        elif task.exception() is not None:
+            outcome = f"{description} FAILED: {task.exception()}"
+            logger.error("plc_legs %s", outcome)
+        else:
+            outcome = f"{description}: at {target_mm} mm"
+            logger.info("plc_legs %s", outcome)
+        try:
+            self.publish_key_values(**{f"plc_{table_id}_last_move": outcome})
+        except Exception as e:
+            logger.warning("Could not publish plc_%s_last_move: %s", table_id, e)
 
     async def _wait_for_dock_completion(self, action: str, result_fn):
         """Poll ARCL status until dock/undock completes, then call result_fn."""

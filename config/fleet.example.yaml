@@ -38,7 +38,8 @@ common:
   # each PLC. Heights are per-workbench mission parameters (mm).
   # plc_client_ams_net_id: "10.102.0.18.1.1"
   # plc_deadband_mm: 10           # match the PLC's deadband
-  # plc_move_timeout_secs: 120.0         # full 800-1131 stroke takes ~55 s at ~6 mm/s
+  # plc_move_timeout_secs: 300.0         # ceiling only; a full 800-1131 stroke takes ~55 s
+  # plc_stall_timeout_secs: 20.0         # fail when the height stops changing this long
   # plc_check_position_valid: false  # enable once g_xPositionValid exists
   # plc_tables:
   #   wb1:

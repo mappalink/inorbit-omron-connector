@@ -48,6 +48,7 @@ class FakePlcConnection:
         self.fail_mid_move = False
         self.done_height_offset = 0  # simulate deadband mismatch
         self.sets_done = True  # False: behave like wb1, which never raises g_xDone
+        self.stuck = False  # True: busy but the height stops changing
 
     def open(self):
         self.is_open = True
@@ -85,6 +86,8 @@ class FakePlcConnection:
 
     def _advance(self):
         if not self._moving:
+            return
+        if self.stuck:
             return
         if self.fail_mid_move:
             self.vars["GVL_HMI.g_xError"] = True
@@ -287,3 +290,41 @@ async def test_no_done_and_outside_deadband_times_out(fake_plc, monkeypatch):
         await task
     assert fake_plc["conn"].stop_pulses == 1
     assert fake_plc["conn"].vars["GVL_HMI.g_xExecuteMove"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fast_asyncio_sleep")
+async def test_stall_without_progress_stops_and_fails(fake_plc):
+    table = make_table(stall_secs=0.1)
+    task = asyncio.ensure_future(table.move_to_height(1131, timeout_secs=30))
+    await asyncio.sleep(0)
+    fake_plc["conn"].stuck = True
+    with pytest.raises(PlcError, match="stalled"):
+        await task
+    assert fake_plc["conn"].stop_pulses == 1
+    assert fake_plc["conn"].vars["GVL_HMI.g_xExecuteMove"] is False
+    assert table.is_moving is False
+
+
+@pytest.mark.asyncio
+async def test_started_event_set_once_busy(fake_plc):
+    table = make_table()
+    started = asyncio.Event()
+    await table.move_to_height(1131, timeout_secs=30, started=started)
+    assert started.is_set()
+
+
+@pytest.mark.asyncio
+async def test_read_state_during_move_returns_move_snapshot(fake_plc):
+    table = make_table(stall_secs=60)
+    started = asyncio.Event()
+    task = asyncio.ensure_future(table.move_to_height(1131, timeout_secs=30, started=started))
+    await asyncio.wait_for(started.wait(), 2)
+    fake_plc["conn"].stuck = True
+    assert table.is_moving
+    # Returns immediately from the move loop's snapshot, no lock wait
+    state = await asyncio.wait_for(table.read_state(), 0.5)
+    assert state.busy is True
+    fake_plc["conn"].stuck = False
+    await task
+    assert table.is_moving is False

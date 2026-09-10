@@ -97,6 +97,7 @@ common:
   mission_database_file: /app/data/missions.db
   plc_client_ams_net_id: "10.102.0.18.1.1"
   plc_deadband_mm: 15
+  plc_stall_timeout_secs: 25
   plc_tables:
     wb1:
       ip: "10.102.180.41"
@@ -116,6 +117,7 @@ omron-1:
     assert cc["mission_database_file"] == "/app/data/missions.db"
     assert cc["plc_client_ams_net_id"] == "10.102.0.18.1.1"
     assert cc["plc_deadband_mm"] == 15
+    assert cc["plc_stall_timeout_secs"] == 25
     assert cc["plc_tables"]["wb1"]["ams_net_id"] == "5.155.201.89.1.1"
     assert cc["plc_tables"]["wb1"]["heights"]["pickup"] == 1131
     # Not left behind at the top level (ConnectorConfig would reject/ignore them)

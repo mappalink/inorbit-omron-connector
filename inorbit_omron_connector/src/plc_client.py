@@ -49,6 +49,9 @@ _POLL_INTERVAL_SECS = 0.1
 # wb1's PLC never sets g_xDone (verified 2026-09-10 with ADS notifications),
 # and the height settles ~2 mm after busy drops.
 _SETTLE_SECS = 1.0
+# Stall detection: less than this much height change for stall_secs stops
+# the move and fails it. A slow (loaded) table is fine as long as it moves.
+_STALL_PROGRESS_MM = 2
 _STOP_PULSE_SECS = 0.2
 
 # Declaring the client AmsNetId is process-global in pyads; do it once.
@@ -107,15 +110,26 @@ class TablePlc:
         ams_net_id: str,
         deadband_mm: int = 10,
         check_position_valid: bool = False,
+        stall_secs: float = 20.0,
     ) -> None:
         self.ip = ip
         self.ams_net_id = ams_net_id
         self.deadband_mm = deadband_mm
         self.check_position_valid = check_position_valid
+        self.stall_secs = stall_secs
         self._plc = pyads.Connection(ams_net_id, PLC_RUNTIME_PORT, ip)
         # ADS has no concurrent-command semantics we want to rely on; one
         # in-flight operation per table at a time.
         self._op_lock = asyncio.Lock()
+        # Set while a move owns the connection; telemetry then reads the move
+        # loop's latest snapshot instead of queueing on the lock.
+        self._moving = False
+        self._last_state: PlcState | None = None
+
+    @property
+    def is_moving(self) -> bool:
+        """True while a move handshake is in progress on this table."""
+        return self._moving
 
     # -- Sync helpers (run in worker threads) ------------------------------
 
@@ -152,31 +166,56 @@ class TablePlc:
     # -- Async API ---------------------------------------------------------
 
     async def read_state(self) -> PlcState:
-        """Read the full status snapshot. Raises PlcError on ADS failure."""
+        """Read the full status snapshot. Raises PlcError on ADS failure.
+
+        During a move the move loop already polls at 10 Hz and owns the
+        connection, so its latest snapshot is returned instead of waiting.
+        """
+        if self._moving and self._last_state is not None:
+            return self._last_state
         async with self._op_lock:
             try:
-                return await asyncio.to_thread(self._read_state_sync)
+                state = await asyncio.to_thread(self._read_state_sync)
             except pyads.ADSError as e:
                 await asyncio.to_thread(self._close)
                 raise PlcError(f"ADS read failed for {self.ip}: {e}") from e
+            self._last_state = state
+            return state
 
-    async def move_to_height(self, target_mm: int, timeout_secs: float = 120.0) -> None:
-        """One full edge-triggered move handshake.
+    async def move_to_height(
+        self,
+        target_mm: int,
+        timeout_secs: float = 300.0,
+        started: asyncio.Event | None = None,
+    ) -> None:
+        """One full edge-triggered move handshake; returns once the legs arrived.
 
-        Raises PlcError on a latched PLC error, invalid position, height
-        mismatch after done, timeout, or ADS failure. On any exit —
-        including task cancellation (mission abort/pause) — g_xExecuteMove
-        is released, which aborts an in-progress move by design.
+        Arrived means the PLC reports g_xDone or, since wb1's PLC never sets
+        it, the axis is idle and holding within the deadband for
+        _SETTLE_SECS. Raises PlcError on a latched PLC error, invalid
+        position, height mismatch after done, no height progress for
+        stall_secs (a slow but moving table is fine), the timeout_secs
+        ceiling, or ADS failure. `started`, if given, is set once the PLC
+        reports busy.
+
+        On any exit — including task cancellation (mission abort/pause) —
+        g_xExecuteMove is released, which aborts an in-progress move by design.
         """
         async with self._op_lock:
+            self._moving = True
             try:
-                await self._move_to_height_locked(target_mm, timeout_secs)
+                await self._move_to_height_locked(target_mm, timeout_secs, started)
             except pyads.ADSError as e:
                 await asyncio.to_thread(self._close)
                 raise PlcError(f"ADS communication failed for {self.ip}: {e}") from e
+            finally:
+                self._moving = False
 
-    async def _move_to_height_locked(self, target_mm: int, timeout_secs: float) -> None:
+    async def _move_to_height_locked(
+        self, target_mm: int, timeout_secs: float, started: asyncio.Event | None
+    ) -> None:
         state = await asyncio.to_thread(self._read_state_sync)
+        self._last_state = state
         if state.error:
             raise PlcError(
                 f"PLC has a latched error (code {state.error_code}): "
@@ -192,8 +231,12 @@ class TablePlc:
             loop = asyncio.get_running_loop()
             deadline = loop.time() + timeout_secs
             settled_since: float | None = None
+            progress_height, progress_ts = state.height_mm, loop.time()
             while True:
                 state = await asyncio.to_thread(self._read_state_sync)
+                self._last_state = state
+                if state.busy and started is not None and not started.is_set():
+                    started.set()
                 if state.error:
                     raise PlcError(
                         f"move to {target_mm} mm failed (code {state.error_code}): "
@@ -203,6 +246,7 @@ class TablePlc:
                     # Variables are read one by one, so the height read may be
                     # staler than the done flag — take a fresh snapshot to verify.
                     state = await asyncio.to_thread(self._read_state_sync)
+                    self._last_state = state
                     if abs(state.height_mm - target_mm) > self.deadband_mm:
                         raise PlcError(
                             f"PLC reports done but height is {state.height_mm} mm, "
@@ -213,7 +257,6 @@ class TablePlc:
                 # Fallback when the PLC never raises g_xDone: idle and holding
                 # within the deadband for _SETTLE_SECS counts as arrived. Also
                 # covers the spec's deadband case (no motion, busy never high).
-                # Outside the deadband we keep waiting until the timeout.
                 if not state.busy and abs(state.height_mm - target_mm) <= self.deadband_mm:
                     if settled_since is None:
                         settled_since = loop.time()
@@ -227,7 +270,18 @@ class TablePlc:
                         return
                 else:
                     settled_since = None
-                if loop.time() > deadline:
+                now = loop.time()
+                if abs(state.height_mm - progress_height) >= _STALL_PROGRESS_MM:
+                    progress_height, progress_ts = state.height_mm, now
+                elif settled_since is None and now - progress_ts > self.stall_secs:
+                    with contextlib.suppress(Exception):
+                        await self._pulse_stop()
+                    raise PlcError(
+                        f"move to {target_mm} mm stalled: no progress for "
+                        f"{self.stall_secs:.0f}s at {state.height_mm} mm "
+                        f"(busy {state.busy}, status {state.status_text!r})"
+                    )
+                if now > deadline:
                     with contextlib.suppress(Exception):
                         await self._pulse_stop()
                     raise PlcError(
