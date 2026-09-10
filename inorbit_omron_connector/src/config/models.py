@@ -55,7 +55,7 @@ class OmronArclConnectorConfig(BaseSettings):
     # static ADS route on each PLC (ours: 10.102.0.18.1.1)
     plc_client_ams_net_id: Optional[str] = None
     plc_deadband_mm: int = 10  # match the PLC's deadband (value pending from FM)
-    plc_move_timeout_secs: float = 60.0
+    plc_move_timeout_secs: float = 120.0
     plc_check_position_valid: bool = False  # enable once g_xPositionValid exists on the PLC
 
 

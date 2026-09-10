@@ -117,7 +117,7 @@ class ArclBehaviorTreeBuilderContext(BehaviorTreeBuilderContext):
         arcl_client: ArclClient,
         plc_tables: dict[str, TablePlc] | None = None,
         plc_heights: dict[str, dict[str, int]] | None = None,
-        plc_move_timeout_secs: float = 60.0,
+        plc_move_timeout_secs: float = 120.0,
         **kwargs,
     ):
         super().__init__(**kwargs)

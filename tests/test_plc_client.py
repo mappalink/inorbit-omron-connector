@@ -47,6 +47,7 @@ class FakePlcConnection:
         self.error_on_read: pyads.ADSError | None = None
         self.fail_mid_move = False
         self.done_height_offset = 0  # simulate deadband mismatch
+        self.sets_done = True  # False: behave like wb1, which never raises g_xDone
 
     def open(self):
         self.is_open = True
@@ -95,7 +96,7 @@ class FakePlcConnection:
         cur = self.vars["GVL_HMI.g_nCurrentHeight"]
         if abs(target - cur) <= self.STEP_MM:
             self.vars["GVL_HMI.g_nCurrentHeight"] = target + self.done_height_offset
-            self.vars["GVL_HMI.g_xDone"] = True
+            self.vars["GVL_HMI.g_xDone"] = self.sets_done
             self.vars["GVL_HMI.g_xBusy"] = False
             self._moving = False
         else:
@@ -253,3 +254,36 @@ async def test_ads_error_wrapped_and_connection_closed(fake_plc):
     with pytest.raises(PlcError, match="ADS read failed"):
         await table.read_state()
     assert conn.is_open is False  # closed so next op reopens
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fast_asyncio_sleep")
+async def test_completes_without_done_once_idle_within_deadband(fake_plc, monkeypatch):
+    # wb1 (2026-09-10): busy drops at the target but g_xDone never goes TRUE
+    monkeypatch.setattr(plc_client, "_SETTLE_SECS", 0.05)
+    table = make_table(deadband_mm=10)
+    task = asyncio.ensure_future(table.move_to_height(1131, timeout_secs=30))
+    await asyncio.sleep(0)
+    fake_plc["conn"].sets_done = False
+    await task
+    conn = fake_plc["conn"]
+    assert conn.vars["GVL_HMI.g_nCurrentHeight"] == 1131
+    assert conn.vars["GVL_HMI.g_xDone"] is False
+    assert conn.vars["GVL_HMI.g_xExecuteMove"] is False
+    assert conn.stop_pulses == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("_fast_asyncio_sleep")
+async def test_no_done_and_outside_deadband_times_out(fake_plc, monkeypatch):
+    # Idle but short of the target: the fallback must not report success
+    monkeypatch.setattr(plc_client, "_SETTLE_SECS", 0.01)
+    table = make_table(deadband_mm=10)
+    task = asyncio.ensure_future(table.move_to_height(1131, timeout_secs=0.3))
+    await asyncio.sleep(0)
+    fake_plc["conn"].sets_done = False
+    fake_plc["conn"].done_height_offset = -50
+    with pytest.raises(PlcError, match="timed out"):
+        await task
+    assert fake_plc["conn"].stop_pulses == 1
+    assert fake_plc["conn"].vars["GVL_HMI.g_xExecuteMove"] is False
