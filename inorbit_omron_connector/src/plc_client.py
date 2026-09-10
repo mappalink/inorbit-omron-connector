@@ -45,6 +45,10 @@ _VAR_STATUS_TEXT = _PREFIX + "g_sStatus"
 _VAR_POSITION_VALID = _PREFIX + "g_xPositionValid"  # pending on PLC side
 
 _POLL_INTERVAL_SECS = 0.1
+# Completion fallback: busy low + height within deadband for this long.
+# wb1's PLC never sets g_xDone (verified 2026-09-10 with ADS notifications),
+# and the height settles ~2 mm after busy drops.
+_SETTLE_SECS = 1.0
 _STOP_PULSE_SECS = 0.2
 
 # Declaring the client AmsNetId is process-global in pyads; do it once.
@@ -156,7 +160,7 @@ class TablePlc:
                 await asyncio.to_thread(self._close)
                 raise PlcError(f"ADS read failed for {self.ip}: {e}") from e
 
-    async def move_to_height(self, target_mm: int, timeout_secs: float = 60.0) -> None:
+    async def move_to_height(self, target_mm: int, timeout_secs: float = 120.0) -> None:
         """One full edge-triggered move handshake.
 
         Raises PlcError on a latched PLC error, invalid position, height
@@ -187,6 +191,7 @@ class TablePlc:
         try:
             loop = asyncio.get_running_loop()
             deadline = loop.time() + timeout_secs
+            settled_since: float | None = None
             while True:
                 state = await asyncio.to_thread(self._read_state_sync)
                 if state.error:
@@ -205,12 +210,30 @@ class TablePlc:
                         )
                     logger.info("PLC %s: at %d mm", self.ip, state.height_mm)
                     return
+                # Fallback when the PLC never raises g_xDone: idle and holding
+                # within the deadband for _SETTLE_SECS counts as arrived. Also
+                # covers the spec's deadband case (no motion, busy never high).
+                # Outside the deadband we keep waiting until the timeout.
+                if not state.busy and abs(state.height_mm - target_mm) <= self.deadband_mm:
+                    if settled_since is None:
+                        settled_since = loop.time()
+                    elif loop.time() - settled_since >= _SETTLE_SECS:
+                        logger.info(
+                            "PLC %s: at %d mm (busy low, no g_xDone; settled %.1fs)",
+                            self.ip,
+                            state.height_mm,
+                            _SETTLE_SECS,
+                        )
+                        return
+                else:
+                    settled_since = None
                 if loop.time() > deadline:
                     with contextlib.suppress(Exception):
                         await self._pulse_stop()
                     raise PlcError(
                         f"move to {target_mm} mm timed out after {timeout_secs:.0f}s "
-                        f"(height {state.height_mm} mm, status {state.status_text!r})"
+                        f"(height {state.height_mm} mm, busy {state.busy}, "
+                        f"status {state.status_text!r})"
                     )
                 await asyncio.sleep(_POLL_INTERVAL_SECS)
         finally:
