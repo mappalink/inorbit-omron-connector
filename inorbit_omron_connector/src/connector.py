@@ -206,6 +206,8 @@ class OmronArclConnector(Connector):
         self._plc_poll_skip: dict[str, int] = {}
         # Button-started moves finishing in the background
         self._plc_move_tasks: set[asyncio.Task] = set()
+        # Custom commands running in the background (see _spawn_command)
+        self._command_tasks: set[asyncio.Task] = set()
         if self._plc_tables and cfg.plc_client_ams_net_id:
             try:
                 declare_client_ams_net_id(cfg.plc_client_ams_net_id)
@@ -249,6 +251,8 @@ class OmronArclConnector(Connector):
     async def _disconnect(self) -> None:
         await self._mission_executor.shutdown()
         await self._arcl.disconnect()
+        for task in list(self._command_tasks):
+            task.cancel()
         for task in list(self._plc_move_tasks):
             task.cancel()  # releases g_xExecuteMove, which stops the legs
         if self._plc_move_tasks:
@@ -480,7 +484,17 @@ class OmronArclConnector(Connector):
                 self._goal_tracker_enabled = False
                 return
 
-            await self._handle_custom_command(script_name, script_args, result_fn)
+            # Run in the background and return to the SDK at once. The SDK calls
+            # this handler on its MQTT network thread and blocks that thread until
+            # we return: a macro or dock wait (60-150 s) starved the MQTT
+            # keepalives, the broker dropped the session and InOrbit showed the
+            # robot offline, and every other command (stop included) queued
+            # behind it.
+            self._spawn_command(
+                script_name,
+                self._handle_custom_command(script_name, script_args, result_fn),
+                result_fn,
+            )
 
         elif command_name == COMMAND_MESSAGE:
             await self._handle_message(args[0], result_fn)
@@ -488,6 +502,27 @@ class OmronArclConnector(Connector):
         else:
             logger.warning("Unhandled command type: %s", command_name)
             result_fn(CommandResultCode.FAILURE)
+
+    def _spawn_command(self, name: str, coro, result_fn) -> None:
+        """Run a custom command without blocking the SDK's MQTT thread."""
+        task = asyncio.create_task(coro, name=f"command:{name}")
+        self._command_tasks.add(task)
+
+        def _done(t: asyncio.Task) -> None:
+            self._command_tasks.discard(t)
+            if t.cancelled():
+                return
+            error = t.exception()
+            if error is not None:
+                # Same report the base class sends for an unexpected exception
+                logger.error("Custom command '%s' failed: %s", name, error)
+                result_fn(
+                    CommandResultCode.FAILURE,
+                    execution_status_details="An error occurred executing custom command",
+                    stderr=str(error) or error.__class__.__name__,
+                )
+
+        task.add_done_callback(_done)
 
     async def _handle_custom_command(self, script_name, script_args: dict, result_fn):
         try:

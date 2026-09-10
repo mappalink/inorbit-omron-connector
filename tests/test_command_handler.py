@@ -16,6 +16,13 @@ from inorbit_edge.robot import COMMAND_CUSTOM_COMMAND, COMMAND_MESSAGE, COMMAND_
 from inorbit_omron_connector.src.goal_tracker import GoalTracker
 
 
+async def _dispatch(connector, command_name, args, options):
+    """Call the handler, then wait for the commands it runs in the background."""
+    await connector._inorbit_command_handler(command_name, args, options)
+    while connector._command_tasks:
+        await asyncio.gather(*list(connector._command_tasks), return_exceptions=True)
+
+
 @pytest.fixture
 def connector():
     """Create an OmronArclConnector with a mocked ArclClient (no real TCP)."""
@@ -56,6 +63,7 @@ def connector():
         instance._plc_move_timeout_secs = 60.0
         instance._plc_poll_skip = {}
         instance._plc_move_tasks = set()
+        instance._command_tasks = set()
         instance.publish_key_values = MagicMock()
 
         yield instance
@@ -115,7 +123,7 @@ class TestHandleMessage:
 class TestCommandRouting:
     @pytest.mark.asyncio
     async def test_routes_command_message(self, connector, options, result_fn):
-        await connector._inorbit_command_handler(COMMAND_MESSAGE, ["inorbit_pause"], options)
+        await _dispatch(connector, COMMAND_MESSAGE, ["inorbit_pause"], options)
 
         connector._arcl.set_block_driving.assert_awaited_once()
         result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
@@ -123,7 +131,7 @@ class TestCommandRouting:
     @pytest.mark.asyncio
     async def test_routes_nav_goal(self, connector, options, result_fn):
         pose = {"x": 5.0, "y": 3.0, "theta": 1.57}
-        await connector._inorbit_command_handler(COMMAND_NAV_GOAL, [pose], options)
+        await _dispatch(connector, COMMAND_NAV_GOAL, [pose], options)
 
         connector._arcl.gotopoint.assert_awaited_once()
         result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
@@ -131,7 +139,7 @@ class TestCommandRouting:
     @pytest.mark.asyncio
     async def test_routes_dock(self, connector, options, result_fn):
         connector._arcl.query_status = AsyncMock(return_value={"Status": "Parked"})
-        await connector._inorbit_command_handler(COMMAND_CUSTOM_COMMAND, ["dock", []], options)
+        await _dispatch(connector, COMMAND_CUSTOM_COMMAND, ["dock", []], options)
 
         connector._arcl.dock.assert_awaited_once()
         result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
@@ -139,25 +147,21 @@ class TestCommandRouting:
     @pytest.mark.asyncio
     async def test_routes_undock(self, connector, options, result_fn):
         connector._arcl.query_status = AsyncMock(return_value={"Status": "Idle"})
-        await connector._inorbit_command_handler(COMMAND_CUSTOM_COMMAND, ["undock", []], options)
+        await _dispatch(connector, COMMAND_CUSTOM_COMMAND, ["undock", []], options)
 
         connector._arcl.undock.assert_awaited_once()
         result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
 
     @pytest.mark.asyncio
     async def test_routes_pauseRobot(self, connector, options, result_fn):
-        await connector._inorbit_command_handler(
-            COMMAND_CUSTOM_COMMAND, ["pauseRobot", []], options
-        )
+        await _dispatch(connector, COMMAND_CUSTOM_COMMAND, ["pauseRobot", []], options)
 
         connector._arcl.set_block_driving.assert_awaited_once()
         result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
 
     @pytest.mark.asyncio
     async def test_routes_resumeRobot(self, connector, options, result_fn):
-        await connector._inorbit_command_handler(
-            COMMAND_CUSTOM_COMMAND, ["resumeRobot", []], options
-        )
+        await _dispatch(connector, COMMAND_CUSTOM_COMMAND, ["resumeRobot", []], options)
 
         connector._arcl.clear_block_driving.assert_awaited_once()
         connector._arcl.go.assert_awaited_once()
@@ -165,7 +169,7 @@ class TestCommandRouting:
 
     @pytest.mark.asyncio
     async def test_unknown_command_returns_failure(self, connector, options, result_fn):
-        await connector._inorbit_command_handler("unknownCommand", ["something"], options)
+        await _dispatch(connector, "unknownCommand", ["something"], options)
 
         result_fn.assert_called_once_with(CommandResultCode.FAILURE)
 
@@ -176,9 +180,7 @@ class TestCommandRouting:
 class TestExecuteMacro:
     @pytest.mark.asyncio
     async def test_missing_macro_name_returns_failure(self, connector, options, result_fn):
-        await connector._inorbit_command_handler(
-            COMMAND_CUSTOM_COMMAND, ["execute_macro", []], options
-        )
+        await _dispatch(connector, COMMAND_CUSTOM_COMMAND, ["execute_macro", []], options)
 
         connector._arcl.execute_macro.assert_not_awaited()
         result_fn.assert_called_once_with(CommandResultCode.FAILURE)
@@ -193,7 +195,8 @@ class TestExecuteMacro:
             return_value={"Status": f"Completed macro {macro}"}
         )
 
-        await connector._inorbit_command_handler(
+        await _dispatch(
+            connector,
             COMMAND_CUSTOM_COMMAND,
             ["execute_macro", ["--macro_name", macro]],
             options,
@@ -212,7 +215,8 @@ class TestExecuteMacro:
             ]
         )
 
-        await connector._inorbit_command_handler(
+        await _dispatch(
+            connector,
             COMMAND_CUSTOM_COMMAND,
             ["execute_macro", ["--macro_name", macro]],
             options,
@@ -234,7 +238,8 @@ class TestExecuteMacro:
             ]
         )
 
-        await connector._inorbit_command_handler(
+        await _dispatch(
+            connector,
             COMMAND_CUSTOM_COMMAND,
             ["execute_macro", ["--macro_name", macro]],
             options,
@@ -252,7 +257,8 @@ class TestExecuteMacro:
             return_value={"Status": f"Completed macro {macro}"}
         )
 
-        await connector._inorbit_command_handler(
+        await _dispatch(
+            connector,
             COMMAND_CUSTOM_COMMAND,
             ["execute_macro", ["macro_name", macro]],
             options,
@@ -276,9 +282,7 @@ class TestPlcLegs:
 
     @staticmethod
     async def _run(connector, options, args):
-        await connector._inorbit_command_handler(
-            COMMAND_CUSTOM_COMMAND, ["plc_legs", args], options
-        )
+        await _dispatch(connector, COMMAND_CUSTOM_COMMAND, ["plc_legs", args], options)
 
     @pytest.mark.asyncio
     async def test_retract_resolves_configured_height(self, connector, options, result_fn):
@@ -414,7 +418,8 @@ class TestPlcCheck:
 
         plc = connector._plc_tables["wb1"]
         plc.check_at_height.return_value = PlcState(1131, False, False, False, 0, "Idle")
-        await connector._inorbit_command_handler(
+        await _dispatch(
+            connector,
             COMMAND_CUSTOM_COMMAND,
             ["plc_check", ["--table", "wb1", "--state", "extended", "--wait_secs", "5"]],
             options,
@@ -430,7 +435,8 @@ class TestPlcCheck:
 
         plc = connector._plc_tables["wb1"]
         plc.check_at_height.side_effect = PlcError("height is 799 mm, expected 1131 ± 10 mm")
-        await connector._inorbit_command_handler(
+        await _dispatch(
+            connector,
             COMMAND_CUSTOM_COMMAND,
             ["plc_check", ["--table", "wb1", "--state", "extended"]],
             options,
@@ -441,10 +447,49 @@ class TestPlcCheck:
     @pytest.mark.asyncio
     async def test_negative_wait_rejected(self, connector, options, result_fn):
         plc = connector._plc_tables["wb1"]
-        await connector._inorbit_command_handler(
+        await _dispatch(
+            connector,
             COMMAND_CUSTOM_COMMAND,
             ["plc_check", ["--table", "wb1", "--state", "extended", "--wait_secs", "-1"]],
             options,
         )
         plc.check_at_height.assert_not_awaited()
         assert result_fn.call_args[0][0] == CommandResultCode.FAILURE
+
+
+class TestBackgroundCommands:
+    """Custom commands must not block the SDK's MQTT thread (keepalives)."""
+
+    @pytest.mark.asyncio
+    async def test_long_command_returns_to_the_sdk_immediately(self, connector, options):
+        gate = asyncio.Event()
+
+        async def slow(*args, **kwargs):
+            await gate.wait()
+
+        with patch.object(connector, "_handle_custom_command", side_effect=slow):
+            await asyncio.wait_for(
+                connector._inorbit_command_handler(
+                    COMMAND_CUSTOM_COMMAND,
+                    ["executeMacro", ["--macro_name", "PrecisionDriveTafel_RB"]],
+                    options,
+                ),
+                timeout=1.0,
+            )
+            assert len(connector._command_tasks) == 1  # still running
+            gate.set()
+            while connector._command_tasks:
+                await asyncio.gather(*list(connector._command_tasks))
+        assert not connector._command_tasks
+
+    @pytest.mark.asyncio
+    async def test_unexpected_error_still_reports_failure(self, connector, options, result_fn):
+        with patch.object(connector, "_handle_custom_command", side_effect=RuntimeError("boom")):
+            await _dispatch(
+                connector,
+                COMMAND_CUSTOM_COMMAND,
+                ["executeMacro", ["--macro_name", "SFA_WS2_2_Off"]],
+                options,
+            )
+        assert result_fn.call_args[0][0] == CommandResultCode.FAILURE
+        assert result_fn.call_args[1]["stderr"] == "boom"
