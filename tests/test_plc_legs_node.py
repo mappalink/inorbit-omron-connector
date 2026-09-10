@@ -19,10 +19,11 @@ from inorbit_edge_executor.datatypes import (
 from inorbit_omron_connector.src.mission.behavior_tree import (
     ArclBehaviorTreeBuilderContext,
     ArclNodeFromStepBuilder,
+    PlcCheckNode,
     PlcLegsNode,
     SharedMemoryKeys,
 )
-from inorbit_omron_connector.src.plc_client import PlcError
+from inorbit_omron_connector.src.plc_client import PlcError, PlcState
 
 
 def make_context(**kwargs) -> ArclBehaviorTreeBuilderContext:
@@ -139,3 +140,77 @@ def test_button_action_id_runs_locally_and_waits():
     node = builder.visit_run_action(step)
     assert isinstance(node, PlcLegsNode)
     assert node._target_mm == 800
+
+
+def _check_step(arguments: dict) -> MissionStepRunAction:
+    return MissionStepRunAction(
+        label="check", runAction={"actionId": "plc_check", "arguments": arguments}
+    )
+
+
+def test_build_plc_check_extended_resolves_pickup_height():
+    builder = ArclNodeFromStepBuilder(make_context())
+    node = builder.visit_run_action(
+        _check_step({"table": "wb1", "state": "extended", "wait_secs": 30})
+    )
+    assert isinstance(node, PlcCheckNode)
+    assert node._target_mm == 1131
+    assert node._wait_secs == 30.0
+
+
+def test_build_plc_check_retracted_and_default_wait():
+    builder = ArclNodeFromStepBuilder(make_context())
+    node = builder.visit_run_action(_check_step({"--table": "wb1", "--state": "retracted"}))
+    assert node._target_mm == 800
+    assert node._wait_secs == 0.0
+
+
+def test_build_plc_check_bad_state_fails_at_build_time():
+    builder = ArclNodeFromStepBuilder(make_context())
+    with pytest.raises(RuntimeError, match="plc_check needs state"):
+        builder.visit_run_action(_check_step({"table": "wb1", "state": "up"}))
+
+
+def test_build_plc_check_negative_wait_fails_at_build_time():
+    builder = ArclNodeFromStepBuilder(make_context())
+    with pytest.raises(RuntimeError, match="wait_secs must be"):
+        builder.visit_run_action(
+            _check_step({"table": "wb1", "state": "extended", "wait_secs": -1})
+        )
+
+
+@pytest.mark.asyncio
+async def test_plc_check_node_only_reads():
+    context = make_context()
+    plc = context.plc_tables["wb1"]
+    plc.check_at_height.return_value = PlcState(1131, False, False, False, 0, "Idle")
+    node = PlcCheckNode(context, table_id="wb1", target_mm=1131, wait_secs=5.0)
+    await node._execute()
+    plc.check_at_height.assert_awaited_once_with(1131, wait_secs=5.0)
+    plc.move_to_height.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_plc_check_node_failure_aborts_with_reason():
+    context = make_context()
+    context.plc_tables["wb1"].check_at_height.side_effect = PlcError(
+        "height is 799 mm, expected 1131 ± 10 mm"
+    )
+    node = PlcCheckNode(context, table_id="wb1", target_mm=1131)
+    context.shared_memory.freeze()
+    with pytest.raises(RuntimeError, match="not at 1131 mm: height is 799 mm"):
+        await node._execute()
+    assert "799" in context.shared_memory.get(SharedMemoryKeys.ARCL_ERROR_MESSAGE)
+
+
+def test_plc_check_node_round_trips_for_crash_recovery():
+    context = make_context()
+    node = PlcCheckNode(context, table_id="wb1", target_mm=1131, wait_secs=12.0, label="chk")
+    dumped = node.dump_object()
+    restored = PlcCheckNode.from_object(
+        context,
+        table_id=dumped["table_id"],
+        target_mm=dumped["target_mm"],
+        wait_secs=dumped["wait_secs"],
+    )
+    assert (restored._table_id, restored._target_mm, restored._wait_secs) == ("wb1", 1131, 12.0)

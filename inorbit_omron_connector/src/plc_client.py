@@ -52,6 +52,7 @@ _SETTLE_SECS = 1.0
 # Stall detection: less than this much height change for stall_secs stops
 # the move and fails it. A slow (loaded) table is fine as long as it moves.
 _STALL_PROGRESS_MM = 2
+_CHECK_POLL_SECS = 0.2
 _STOP_PULSE_SECS = 0.2
 
 # Declaring the client AmsNetId is process-global in pyads; do it once.
@@ -300,6 +301,48 @@ class TablePlc:
             )
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await asyncio.shield(release)
+
+    async def check_at_height(self, target_mm: int, wait_secs: float = 0.0) -> PlcState:
+        """Verify, without writing anything, that the table stands at target_mm.
+
+        Passes when the PLC is readable, has no latched error, is not busy,
+        and the height holds within the deadband for _SETTLE_SECS. Waits up
+        to wait_secs for a problem to clear (0: must already be fine), then
+        raises PlcError saying what is wrong. Never writes to the PLC.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait_secs  # applies only while something is wrong
+        settled_since: float | None = None
+        while True:
+            state = await self.read_state()  # PlcError on ADS failure
+            if state.error:
+                problem = (
+                    f"PLC has a latched error (code {state.error_code}): "
+                    f"{state.status_text!r} — clear it at the machine"
+                )
+            elif self.check_position_valid and state.position_valid is False:
+                problem = "axis not referenced (g_xPositionValid FALSE)"
+            elif state.busy:
+                problem = f"legs are moving (height {state.height_mm} mm)"
+            elif abs(state.height_mm - target_mm) > self.deadband_mm:
+                problem = (
+                    f"height is {state.height_mm} mm, expected {target_mm} ± {self.deadband_mm} mm"
+                )
+            else:
+                problem = None
+            now = loop.time()
+            if problem is None:
+                # Healthy: keep watching until the height has held for the full
+                # settle time. A problem during that time resets the hold.
+                if settled_since is None:
+                    settled_since = now
+                if now - settled_since >= _SETTLE_SECS:
+                    return state
+            else:
+                settled_since = None
+                if now >= deadline:
+                    raise PlcError(problem)
+            await asyncio.sleep(_CHECK_POLL_SECS)
 
     async def stop(self) -> None:
         """Pulse g_xStop for an immediate controlled stop."""
