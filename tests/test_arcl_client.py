@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 import pytest_asyncio
@@ -26,6 +27,9 @@ class MockArclServer:
         self._clients: list[asyncio.StreamWriter] = []
         # Map of command prefix -> response lines
         self.responses: dict[str, list[str]] = {}
+        # Map of command prefix -> pause (s) halfway through its response,
+        # to mimic a reply that arrives in two TCP bursts
+        self.mid_reply_pause: dict[str, float] = {}
 
     async def start(self):
         self.server = await asyncio.start_server(self._handle_client, self.host, self.port)
@@ -72,7 +76,12 @@ class MockArclServer:
                 # Send configured responses
                 cmd_word = cmd.split()[0].lower() if cmd else ""
                 if cmd_word in self.responses:
-                    for line in self.responses[cmd_word]:
+                    lines = self.responses[cmd_word]
+                    pause = self.mid_reply_pause.get(cmd_word)
+                    for i, line in enumerate(lines):
+                        if pause and i == len(lines) // 2:
+                            await writer.drain()
+                            await asyncio.sleep(pause)
                         writer.write(f"{line}\r\n".encode())
                     await writer.drain()
 
@@ -225,6 +234,79 @@ class TestQueryStatus:
             assert status["LocalizationScore"] == "0.371681"
         finally:
             await client.disconnect()
+
+
+# `status` as the HD1500 sends it (ARCL capture 2026-06-22): no terminator line.
+REAL_STATUS = [
+    "ExtendedStatusForHumans: Stopped",
+    "Status: Stopped",
+    "StateOfCharge: 57.0",
+    "Location: 35514 14400 89",
+    "LocalizationScore: 0.251101",
+    "Temperature: 40",
+]
+
+
+class TestReplyCompletion:
+    """`status` and `odometer` replies end without a terminator line."""
+
+    @pytest.mark.asyncio
+    async def test_status_returns_without_waiting_out_the_timeout(
+        self, connected_client, mock_server
+    ):
+        mock_server.responses["status"] = REAL_STATUS
+
+        start = time.monotonic()
+        status = await connected_client.query_status()
+        elapsed = time.monotonic() - start
+
+        assert status["Temperature"] == "40"
+        assert elapsed < 0.5
+
+    @pytest.mark.asyncio
+    async def test_trip_odometer_line_returns_without_waiting_out_the_timeout(
+        self, connected_client, mock_server
+    ):
+        # What the HD1500 answers: the trip odometer on one line, no velocity.
+        mock_server.responses["odometer"] = ["Odometer: 0 mm 0 deg 4005 sec"]
+
+        start = time.monotonic()
+        await connected_client.query_odometer()
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 0.5
+
+    @pytest.mark.asyncio
+    async def test_status_arriving_in_two_bursts_is_not_cut_short(
+        self, connected_client, mock_server
+    ):
+        mock_server.responses["status"] = REAL_STATUS
+        mock_server.mid_reply_pause["status"] = 0.05
+
+        status = await connected_client.query_status()
+
+        assert set(status) == {
+            "ExtendedStatusForHumans",
+            "Status",
+            "StateOfCharge",
+            "Location",
+            "LocalizationScore",
+            "Temperature",
+        }
+
+    @pytest.mark.asyncio
+    async def test_concurrent_status_queries_each_get_the_full_reply(
+        self, connected_client, mock_server
+    ):
+        """The telemetry loop and a macro or dock wait both poll `status`."""
+        mock_server.responses["status"] = REAL_STATUS
+
+        first, second = await asyncio.gather(
+            connected_client.query_status(), connected_client.query_status()
+        )
+
+        assert first["Location"] == "35514 14400 89"
+        assert second["Location"] == "35514 14400 89"
 
 
 class TestQueryGoals:
