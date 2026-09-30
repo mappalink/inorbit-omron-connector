@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
@@ -54,6 +55,7 @@ def connector():
         instance._goal_tracker_enabled = True
         instance._last_nav_goal = None
         instance._last_nav_point = None
+        instance._active_macro = None
 
         # Workbench PLC integration — one mocked table
         mock_plc = AsyncMock()
@@ -266,6 +268,64 @@ class TestExecuteMacro:
 
         connector._arcl.execute_macro.assert_awaited_once_with(macro)
         result_fn.assert_called_once_with(CommandResultCode.SUCCESS)
+
+    @pytest.mark.asyncio
+    async def test_second_macro_is_refused_while_one_is_running(self, connector, options):
+        running = "PrecisionDriveTafel_LO"
+        connector._arcl.query_status = AsyncMock(
+            return_value={"Status": f"Executing macro {running}"}
+        )
+        await connector._inorbit_command_handler(
+            COMMAND_CUSTOM_COMMAND, ["execute_macro", ["--macro_name", running]], options
+        )
+        await asyncio.sleep(0)  # let the first macro start
+
+        second_result = MagicMock()
+        try:
+            await connector._inorbit_command_handler(
+                COMMAND_CUSTOM_COMMAND,
+                ["execute_macro", ["--macro_name", "PrecisionDriveTafel_RB"]],
+                {"result_function": second_result},
+            )
+            await asyncio.sleep(0)
+
+            connector._arcl.execute_macro.assert_awaited_once_with(running)
+            second_result.assert_called_once_with(
+                CommandResultCode.FAILURE,
+                execution_status_details=(
+                    f"macro {running} is still running; wait for it to finish"
+                ),
+            )
+        finally:
+            for task in list(connector._command_tasks):
+                task.cancel()
+            await asyncio.gather(*list(connector._command_tasks), return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_timeout_is_wall_time_not_a_count_of_polls(
+        self, connector, options, result_fn, monkeypatch
+    ):
+        """A status query takes time too; the 75 s timeout once took 151 s."""
+        from inorbit_omron_connector.src import connector as connector_module
+
+        monkeypatch.setattr(connector_module, "_MACRO_TIMEOUT", 0.3)
+        monkeypatch.setattr(connector_module, "_MACRO_POLL_INTERVAL", 0.01)
+        macro = "PrecisionDriveTafel_LO"
+
+        async def slow_status():
+            await asyncio.sleep(0.1)
+            return {"Status": f"Executing macro {macro}"}
+
+        connector._arcl.query_status = slow_status
+
+        start = time.monotonic()
+        await _dispatch(
+            connector, COMMAND_CUSTOM_COMMAND, ["execute_macro", ["--macro_name", macro]], options
+        )
+        elapsed = time.monotonic() - start
+
+        result_fn.assert_called_once_with(CommandResultCode.FAILURE)
+        assert elapsed < 1.0
 
 
 # -- plc_legs (workbench lifting columns) -------------------------------------
