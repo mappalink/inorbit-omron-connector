@@ -208,6 +208,8 @@ class OmronArclConnector(Connector):
         self._plc_move_tasks: set[asyncio.Task] = set()
         # Custom commands running in the background (see _spawn_command)
         self._command_tasks: set[asyncio.Task] = set()
+        # Macro started by the execute_macro command and not finished yet
+        self._active_macro: str | None = None
         if self._plc_tables and cfg.plc_client_ams_net_id:
             try:
                 declare_client_ams_net_id(cfg.plc_client_ams_net_id)
@@ -556,9 +558,20 @@ class OmronArclConnector(Connector):
                     logger.error("execute_macro missing --macro_name / macro_name argument")
                     result_fn(CommandResultCode.FAILURE)
                     return
-                await self._arcl.execute_macro(macro_name)
-                logger.info("Sent executeMacro %s", macro_name)
-                await self._wait_for_macro_completion(macro_name, result_fn)
+                if self._active_macro is not None:
+                    # A second executeMacro would pre-empt the running one, and
+                    # both waits would then report the same outcome.
+                    msg = f"macro {self._active_macro} is still running; wait for it to finish"
+                    logger.warning("execute_macro %s refused: %s", macro_name, msg)
+                    result_fn(CommandResultCode.FAILURE, execution_status_details=msg)
+                    return
+                self._active_macro = macro_name
+                try:
+                    await self._arcl.execute_macro(macro_name)
+                    logger.info("Sent executeMacro %s", macro_name)
+                    await self._wait_for_macro_completion(macro_name, result_fn)
+                finally:
+                    self._active_macro = None
 
             elif script_name == "plc_legs":
                 await self._handle_plc_legs(script_args, result_fn)
@@ -787,11 +800,14 @@ class OmronArclConnector(Connector):
              categorise the destination.
         """
         expected_active = f"{_MACRO_ACTIVE_PREFIX}{macro_name}"
-        elapsed = 0.0
+        # Wall time: a status query takes time as well, so counting polls
+        # stretched the timeout (75 s took 151 s on 2026-09-16).
+        loop = asyncio.get_running_loop()
+        started = loop.time()
         saw_active = False
 
         # Phase 1: kickoff guard
-        while elapsed < _MACRO_KICKOFF_GRACE:
+        while loop.time() - started < _MACRO_KICKOFF_GRACE:
             try:
                 status = await self._arcl.query_status()
                 cur = status.get("Status", "") if status else ""
@@ -814,7 +830,6 @@ class OmronArclConnector(Connector):
                 return
 
             await asyncio.sleep(_MACRO_POLL_INTERVAL)
-            elapsed += _MACRO_POLL_INTERVAL
 
         if not saw_active:
             logger.warning("Macro %s never reached active status (EStop or rejected?)", macro_name)
@@ -822,7 +837,7 @@ class OmronArclConnector(Connector):
             return
 
         # Phase 2: wait for active → terminal transition
-        while elapsed < _MACRO_TIMEOUT:
+        while loop.time() - started < _MACRO_TIMEOUT:
             try:
                 status = await self._arcl.query_status()
                 cur = status.get("Status", "") if status else ""
@@ -841,10 +856,9 @@ class OmronArclConnector(Connector):
             # Anything else (still active, brief excursion, unknown state) →
             # keep polling. Unknown-destination must not declare SUCCESS — that
             # would be premature SUCCESS, the dangerous failure mode.
-            logger.debug("Macro %s status: %s (%.0fs)", macro_name, cur, elapsed)
+            logger.debug("Macro %s status: %s (%.0fs)", macro_name, cur, loop.time() - started)
 
             await asyncio.sleep(_MACRO_POLL_INTERVAL)
-            elapsed += _MACRO_POLL_INTERVAL
 
         logger.error("Macro %s timed out after %.0fs", macro_name, _MACRO_TIMEOUT)
         result_fn(CommandResultCode.FAILURE)
