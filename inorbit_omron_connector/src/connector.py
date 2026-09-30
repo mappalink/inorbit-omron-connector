@@ -310,6 +310,7 @@ class OmronArclConnector(Connector):
         location_str = status.get("Location", "")
         x_mm, y_mm = 0.0, 0.0
         x_m, y_m, yaw_rad = 0.0, 0.0, 0.0
+        have_pose = False
         if location_str:
             try:
                 parts = location_str.split()
@@ -318,10 +319,14 @@ class OmronArclConnector(Connector):
                 x_m = x_mm / 1000.0
                 y_m = y_mm / 1000.0
                 yaw_rad = math.radians(float(parts[2]))
+                have_pose = True
             except (ValueError, IndexError) as e:
                 logger.warning("Failed to parse location '%s': %s", location_str, e)
 
-        self.publish_pose(x=x_m, y=y_m, yaw=yaw_rad, frame_id=self._map_id)
+        # No Location (a cut-short reply) means no pose this cycle: publishing
+        # the zero defaults would jump the robot to the map origin.
+        if have_pose:
+            self.publish_pose(x=x_m, y=y_m, yaw=yaw_rad, frame_id=self._map_id)
 
         # Build key-values from all ARCL status fields
         kv: dict[str, str | float] = {}
@@ -361,8 +366,8 @@ class OmronArclConnector(Connector):
         except Exception as e:
             logger.debug("Odometer query failed: %s", e)
 
-        # Query laser scans and publish to InOrbit
-        if self._laser_names:
+        # Query laser scans and publish to InOrbit (they are placed at the pose)
+        if self._laser_names and have_pose:
             await self._publish_lasers(x_mm, y_mm, x_m, y_m, yaw_rad)
 
     async def _publish_plc_telemetry(self) -> None:
