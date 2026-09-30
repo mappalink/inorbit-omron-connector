@@ -493,3 +493,27 @@ class TestBackgroundCommands:
             )
         assert result_fn.call_args[0][0] == CommandResultCode.FAILURE
         assert result_fn.call_args[1]["stderr"] == "boom"
+
+
+# -- Telemetry loop -----------------------------------------------------------
+
+
+class TestExecutionLoop:
+    @pytest.mark.asyncio
+    async def test_status_without_location_publishes_no_pose(self, connector):
+        """A cut-short status reply must not teleport the robot to the map origin."""
+        connector._plc_tables = {}
+        connector._laser_names = []
+        connector._arcl.is_connected = MagicMock(return_value=True)
+        connector._arcl.query_status = AsyncMock(
+            return_value={"ExtendedStatusForHumans": "Stopped", "Status": "Stopped"}
+        )
+        connector._arcl.query_odometer = AsyncMock(return_value={})
+        connector.publish_pose = MagicMock()
+
+        await connector._execution_loop()
+
+        connector.publish_pose.assert_not_called()
+        connector.publish_key_values.assert_called_once_with(
+            omron_status_text="Stopped", omron_status="Stopped"
+        )
