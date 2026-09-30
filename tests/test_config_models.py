@@ -43,11 +43,15 @@ def test_arcl_defaults(base_config_data: dict) -> None:
     assert cfg.arcl_port == 7171
     assert cfg.arcl_timeout == 10
     assert cfg.arcl_reconnect_interval == 5
-    assert cfg.poll_frequency == 1.0
     assert cfg.map_id == "map"
     assert cfg.map_file is None
     assert cfg.laser_names == []
     assert cfg.laser_n_points == 720
+
+
+def test_poll_frequency_is_not_a_setting() -> None:
+    """The loop rate is the base config's `update_freq`; nothing read poll_frequency."""
+    assert "poll_frequency" not in OmronArclConnectorConfig.model_fields
 
 
 def test_missing_arcl_host_raises() -> None:
