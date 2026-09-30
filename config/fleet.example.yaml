@@ -12,7 +12,6 @@ common:
 
   arcl_port: 7171
   arcl_password: "${OMRON_ARCL_PASSWORD}"
-  poll_frequency: 1.0
 
   map_file: "/config/omron_map.png"
   map_resolution: 0.02

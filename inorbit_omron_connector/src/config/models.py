@@ -36,7 +36,6 @@ class OmronArclConnectorConfig(BaseSettings):
     arcl_password: str  # ARCL password
     arcl_timeout: int = 10  # Connection timeout (seconds)
     arcl_reconnect_interval: int = 5  # Reconnect delay (seconds)
-    poll_frequency: float = 1.0  # Hz
     map_id: str = "map"  # InOrbit map frame ID
     map_file: Optional[str] = None  # Path to map PNG on disk
     map_resolution: float = 0.05  # Meters per pixel
