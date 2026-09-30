@@ -15,6 +15,12 @@ from enum import Enum, auto
 
 logger = logging.getLogger(__name__)
 
+# `status` and `odometer` replies end without a terminator line. Such a reply
+# is complete once the robot has sent nothing more for this long; waiting out
+# the full command timeout instead cost 6 s of every telemetry cycle.
+_QUIET_GAP = 0.15
+_NO_TERMINATOR_COMMANDS = frozenset({"status", "odometer"})
+
 
 class CommandType(Enum):
     GENERIC = auto()
@@ -51,6 +57,9 @@ class ArclClient:
         # Request-response tracking: maps a command string to a Future
         self._pending_requests: dict[str, asyncio.Future] = {}
         self._pending_lock = asyncio.Lock()
+        # Replies carry no request id, so only one request may be outstanding:
+        # two concurrent `status` queries stole each other's lines.
+        self._request_lock = asyncio.Lock()
 
         # Cached status from the most recent successful query_status() call.
         # Used by the BT wait node to avoid sending competing "status" commands.
@@ -231,11 +240,13 @@ class ArclClient:
                     if not hasattr(fut, "_lines"):
                         fut._lines = []
                     fut._lines.append(msg)
+                    fut._last_rx = asyncio.get_running_loop().time()
 
                 elif cmd_key == "odometer" and msg.startswith("Odometer:"):
                     if not hasattr(fut, "_lines"):
                         fut._lines = []
                     fut._lines.append(msg)
+                    fut._last_rx = asyncio.get_running_loop().time()
 
                 elif cmd_key == "getgoals":
                     if msg.startswith("Goal:"):
@@ -321,32 +332,46 @@ class ArclClient:
         Returns a list of response lines. For fire-and-forget commands,
         use _enqueue_command directly instead.
         """
-        loop = asyncio.get_event_loop()
-        fut = loop.create_future()
+        loop = asyncio.get_running_loop()
 
         # Use the command word as the key for matching responses
         cmd_key = cmd.strip().split()[0].lower() if cmd.strip() else cmd.strip()
+        quiet_gap_completes = cmd_key in _NO_TERMINATOR_COMMANDS
 
-        async with self._pending_lock:
-            self._pending_requests[cmd_key] = fut
-
-        # Send the command
-        await self._enqueue_command(CommandType.GENERIC, f"{cmd}\n")
-
-        try:
-            result = await asyncio.wait_for(fut, timeout=timeout)
-            return result
-        except asyncio.TimeoutError:
+        async with self._request_lock:
+            fut = loop.create_future()
             async with self._pending_lock:
-                self._pending_requests.pop(cmd_key, None)
-            # Return whatever lines accumulated before timeout
-            lines = getattr(fut, "_lines", [])
-            if lines:
-                return lines
-            raise
-        finally:
-            async with self._pending_lock:
-                self._pending_requests.pop(cmd_key, None)
+                self._pending_requests[cmd_key] = fut
+
+            # Send the command
+            await self._enqueue_command(CommandType.GENERIC, f"{cmd}\n")
+
+            deadline = loop.time() + timeout
+            try:
+                while True:
+                    now = loop.time()
+                    lines = getattr(fut, "_lines", [])
+                    wait = deadline - now
+                    if quiet_gap_completes and lines:
+                        quiet_at = fut._last_rx + _QUIET_GAP
+                        if now >= quiet_at:
+                            return list(lines)
+                        wait = min(wait, quiet_at - now)
+                    elif quiet_gap_completes:
+                        # Nothing received yet: look again after one gap
+                        wait = min(wait, _QUIET_GAP)
+                    if wait <= 0:
+                        # Return whatever lines accumulated before timeout
+                        if lines:
+                            return list(lines)
+                        raise asyncio.TimeoutError
+                    done, _ = await asyncio.wait({fut}, timeout=wait)
+                    if done:
+                        return fut.result()
+            finally:
+                async with self._pending_lock:
+                    if self._pending_requests.get(cmd_key) is fut:
+                        del self._pending_requests[cmd_key]
 
     async def query_status(self) -> dict:
         """Send 'status' and parse the response into a dict.
