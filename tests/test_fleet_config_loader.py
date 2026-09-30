@@ -123,3 +123,18 @@ omron-1:
     # Not left behind at the top level (ConnectorConfig would reject/ignore them)
     for key in ("mission_database_file", "plc_tables", "plc_client_ams_net_id"):
         assert key not in cfg
+
+
+def test_fleet_file_that_still_carries_poll_frequency_loads(tmp_path):
+    """The key was never read; a fleet file written for 0.1.30 must keep working."""
+    from inorbit_omron_connector.src.config.models import ConnectorConfig
+
+    p = tmp_path / "fleet.yaml"
+    p.write_text(
+        SAMPLE_YAML.replace("  arcl_port: 7171\n", "  arcl_port: 7171\n  poll_frequency: 1.0\n")
+    )
+
+    config = ConnectorConfig(**get_robot_config(str(p), "omron-1"))
+
+    assert config.connector_config.arcl_host == "10.200.0.2"
+    assert not hasattr(config.connector_config, "poll_frequency")

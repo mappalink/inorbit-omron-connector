@@ -20,7 +20,6 @@ OMRON_FIELDS = [
     "arcl_password",
     "arcl_timeout",
     "arcl_reconnect_interval",
-    "poll_frequency",
     "map_id",
     "map_file",
     "map_resolution",

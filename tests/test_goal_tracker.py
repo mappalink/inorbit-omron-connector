@@ -114,6 +114,19 @@ class TestDispatchedGoals:
         assert payload["state"] == "Done"
         assert payload["status"] == "OK"
 
+    def test_goal_that_ends_in_stopped_is_reported_done(self, clock):
+        """Decided 2026-09-30: a pause (block driving) shows as `Stopped`, and the
+        resume re-sends the goal as a new mission. Reporting `Stopped` as a
+        failure would turn every paused goal into a failed mission."""
+        tracker = GoalTracker()
+        tracker.on_goal_dispatched("WS1")
+        tracker.update(status("Going to WS1"))
+
+        payload = tracker.update(status("Stopped"))
+
+        assert payload["state"] == "Done"
+        assert payload["status"] == "OK"
+
     def test_stopped_goal_is_not_picked_up_again_from_a_stale_status(self, clock):
         tracker = GoalTracker()
         tracker.on_goal_dispatched("WS1")
