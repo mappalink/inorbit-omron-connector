@@ -57,6 +57,25 @@ class TestForeignGoals:
         assert payload["status"] == "OK"
         assert not tracker.is_active
 
+    def test_timestamps_are_whole_milliseconds(self, clock):
+        """InOrbit only lists the mission when startTs / endTs are integers.
+
+        On 2026-10-08 a Go to warehouse3 reached the robot's mission_tracking
+        attribute with startTs 1791449794784.9387 and never appeared in the
+        mission list; the MiR connector's integer timestamps do.
+        """
+        clock.now = 1_789_550_000.4387
+        tracker = GoalTracker()
+        started = tracker.update(status("Going to warehouse3"))
+        clock.now += 36.335
+
+        done = tracker.update(status("Arrived at warehouse3"))
+
+        assert type(started["startTs"]) is int
+        assert started["startTs"] == 1_789_550_000_438
+        assert type(done["endTs"]) is int
+        assert done["endTs"] == 1_789_550_036_773
+
     def test_failed_goal_reports_aborted(self):
         tracker = GoalTracker()
         tracker.update(status("Going to Pickup_WS2_2"))
