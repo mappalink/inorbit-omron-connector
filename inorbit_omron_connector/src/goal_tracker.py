@@ -244,12 +244,12 @@ class GoalTracker:
             "state": state,
             "status": status,
             "label": label,
-            "startTs": self._start_ts * 1000,
+            "startTs": int(self._start_ts * 1000),
             "completedPercent": completed_percent,
             "data": data,
         }
         if end_ts is not None:
-            payload["endTs"] = end_ts * 1000
+            payload["endTs"] = int(end_ts * 1000)
         return payload
 
     def _reset(self) -> None:
