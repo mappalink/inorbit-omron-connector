@@ -172,6 +172,47 @@ class TestDispatchedGoals:
         assert payload is None or payload["state"] == "Executing"
         assert tracker.is_active
 
+    def test_pause_leaves_the_status_at_going_to(self, clock):
+        """2026-10-08: during a 40 s pause (block driving) every status sample
+        still read `Going to warehouse1`; the pause closes nothing by itself."""
+        tracker = GoalTracker()
+        tracker.on_goal_dispatched("warehouse1")
+        tracker.update(status("Going to warehouse1"))
+        tracker.on_pause()
+
+        payload = tracker.update(status("Going to warehouse1"))
+
+        assert payload is None or payload["state"] == "Executing"
+        assert tracker.is_active
+
+    def test_resume_closes_the_paused_goal_done_and_starts_a_new_one(self, clock):
+        tracker = GoalTracker()
+        first = tracker.on_goal_dispatched("warehouse1")
+        started = tracker.update(status("Going to warehouse1"))
+        tracker.on_pause()
+        tracker.update(status("Going to warehouse1"))
+
+        clock.now += 41.0
+        closing = tracker.on_goal_dispatched("warehouse1")
+
+        assert first is None
+        assert closing["missionId"] == started["missionId"]
+        assert closing["state"] == "Done"
+        assert closing["status"] == "OK"
+        assert tracker.is_active
+        assert tracker.update(status("Going to warehouse1"))["missionId"] != started["missionId"]
+
+    def test_new_goal_pre_empting_an_active_one_aborts_it(self, clock):
+        tracker = GoalTracker()
+        tracker.on_goal_dispatched("warehouse1")
+        started = tracker.update(status("Going to warehouse1"))
+
+        closing = tracker.on_goal_dispatched("warehouse3")
+
+        assert closing["missionId"] == started["missionId"]
+        assert closing["state"] == "Aborted"
+        assert tracker.update(status("Going to warehouse3"))["label"] == "Go to warehouse3"
+
     def test_pause_flag_does_not_outlive_the_goal(self, clock):
         tracker = GoalTracker()
         tracker.on_goal_dispatched("WS1")

@@ -85,12 +85,26 @@ class GoalTracker:
     def is_active(self) -> bool:
         return self._mission_id is not None
 
-    def on_goal_dispatched(self, goal_label: str) -> None:
-        """Call when a goto or gotopoint command is sent to ARCL."""
+    def on_goal_dispatched(self, goal_label: str) -> dict | None:
+        """Call when a goto or gotopoint command is sent to ARCL.
+
+        Returns the closing payload of a goal still being tracked, to publish
+        before the new one starts: Done when this connector had paused the
+        robot (the resume re-sends the goal), Aborted when the new goal
+        pre-empts it. Seen 2026-10-08: a pause (block driving) leaves the
+        Status line at `Going to <goal>`, so nothing else closes a paused goal
+        and it stayed Executing in InOrbit after the resume.
+        """
+        closing = None
+        if self.is_active:
+            closing = self._finish(failed=not self._paused_by_us)
         self._start("goal", goal_label)
+        return closing
 
     def _start(self, kind: str, label: str) -> None:
-        self._mission_id = f"omron-{kind}-{int(time.time())}"
+        # Milliseconds: a resume or a pre-empting goto within the same second
+        # must not reuse the id of the goal it closes.
+        self._mission_id = f"omron-{kind}-{int(time.time() * 1000)}"
         self._kind = kind
         self._goal_label = label
         self._start_ts = time.time()
