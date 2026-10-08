@@ -133,18 +133,57 @@ class TestDispatchedGoals:
         assert payload["state"] == "Done"
         assert payload["status"] == "OK"
 
-    def test_goal_that_ends_in_stopped_is_reported_done(self, clock):
+    def test_goal_paused_by_the_connector_is_reported_done(self, clock):
         """Decided 2026-09-30: a pause (block driving) shows as `Stopped`, and the
-        resume re-sends the goal as a new mission. Reporting `Stopped` as a
+        resume re-sends the goal as a new mission. Reporting that `Stopped` as a
         failure would turn every paused goal into a failed mission."""
         tracker = GoalTracker()
         tracker.on_goal_dispatched("WS1")
         tracker.update(status("Going to WS1"))
+        tracker.on_pause()
 
         payload = tracker.update(status("Stopped"))
 
         assert payload["state"] == "Done"
         assert payload["status"] == "OK"
+
+    def test_goal_stopped_short_by_someone_else_is_aborted(self, clock):
+        """2026-10-08: an E-stop during Go to warehouse1 ended in `Stopped`
+        39 cm short of the goal and InOrbit listed the mission as Done. A stop
+        this connector did not send leaves the goal unreached."""
+        tracker = GoalTracker()
+        tracker.on_goal_dispatched("warehouse1")
+        tracker.update(status("Going to warehouse1"))
+        tracker.update(status("EStop pressed"))
+
+        payload = tracker.update(status("Stopped"))
+
+        assert payload["state"] == "Aborted"
+        assert payload["status"] == "error"
+        assert not tracker.is_active
+
+    def test_estop_keeps_the_goal_executing_until_the_robot_stops(self, clock):
+        tracker = GoalTracker()
+        tracker.on_goal_dispatched("warehouse1")
+        tracker.update(status("Going to warehouse1"))
+
+        payload = tracker.update(status("EStop pressed"))
+
+        assert payload is None or payload["state"] == "Executing"
+        assert tracker.is_active
+
+    def test_pause_flag_does_not_outlive_the_goal(self, clock):
+        tracker = GoalTracker()
+        tracker.on_goal_dispatched("WS1")
+        tracker.update(status("Going to WS1"))
+        tracker.on_pause()
+        tracker.update(status("Stopped"))
+
+        tracker.on_goal_dispatched("WS1")
+        tracker.update(status("Going to WS1"))
+        payload = tracker.update(status("Stopped"))
+
+        assert payload["state"] == "Aborted"
 
     def test_stopped_goal_is_not_picked_up_again_from_a_stale_status(self, clock):
         tracker = GoalTracker()

@@ -590,6 +590,7 @@ class OmronArclConnector(Connector):
                 result_fn(CommandResultCode.SUCCESS)
 
             elif script_name in ("pause", "pauseRobot"):
+                self._goal_tracker.on_pause()
                 await self._arcl.set_block_driving(
                     BLOCK_NAME, "Paused by InOrbit", "Robot paused via InOrbit cloud command"
                 )
@@ -867,6 +868,7 @@ class OmronArclConnector(Connector):
         """Handle COMMAND_MESSAGE — cloud-mode pause/resume."""
         try:
             if msg == "inorbit_pause":
+                self._goal_tracker.on_pause()
                 await self._arcl.set_block_driving(
                     BLOCK_NAME, "Paused by InOrbit", "Robot paused via InOrbit cloud command"
                 )
