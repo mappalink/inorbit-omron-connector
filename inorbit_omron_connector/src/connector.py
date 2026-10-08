@@ -404,6 +404,12 @@ class OmronArclConnector(Connector):
                 kv[f"plc_{table_id}_position_valid"] = state.position_valid
             self.publish_key_values(**kv)
 
+    def _dispatch_goal(self, label: str) -> None:
+        """Announce a goto / gotopoint to the goal tracker; close a goal it still tracks."""
+        closing = self._goal_tracker.on_goal_dispatched(label)
+        if closing is not None:
+            self._publish_mission_tracking(closing)
+
     def _publish_mission_tracking(self, payload: dict) -> None:
         """Publish mission_tracking as an event (matches MiR connector pattern)."""
         self._get_session().publish_key_values(
@@ -535,7 +541,7 @@ class OmronArclConnector(Connector):
         try:
             if script_name == "goto_goal":
                 goal_name = script_args["--goal_name"]
-                self._goal_tracker.on_goal_dispatched(goal_name)
+                self._dispatch_goal(goal_name)
                 self._last_nav_goal = goal_name
                 self._last_nav_point = None
                 await self._arcl.goto(goal_name)
@@ -892,12 +898,12 @@ class OmronArclConnector(Connector):
         gotopoint so the robot continues to its destination.
         """
         if self._last_nav_goal:
-            self._goal_tracker.on_goal_dispatched(self._last_nav_goal)
+            self._dispatch_goal(self._last_nav_goal)
             await self._arcl.goto(self._last_nav_goal)
             logger.info("Resumed: re-sent goto %s", self._last_nav_goal)
         elif self._last_nav_point:
             x, y, t = self._last_nav_point
-            self._goal_tracker.on_goal_dispatched(f"({x / 1000:.1f}, {y / 1000:.1f})")
+            self._dispatch_goal(f"({x / 1000:.1f}, {y / 1000:.1f})")
             await self._arcl.gotopoint(x, y, t)
             logger.info("Resumed: re-sent gotopoint %d %d %d", x, y, t)
         else:
@@ -916,7 +922,7 @@ class OmronArclConnector(Connector):
             y_mm = int(y * 1000)
             theta_deg = int(math.degrees(theta))
 
-            self._goal_tracker.on_goal_dispatched(f"({x:.1f}, {y:.1f})")
+            self._dispatch_goal(f"({x:.1f}, {y:.1f})")
             self._last_nav_goal = None
             self._last_nav_point = (x_mm, y_mm, theta_deg)
             await self._arcl.gotopoint(x_mm, y_mm, theta_deg)
