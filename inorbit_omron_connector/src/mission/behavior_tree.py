@@ -80,11 +80,16 @@ _SUCCESS_PREFIXES = frozenset(
 # "Stopped", and the step timed out after 60 s and reported failure.
 _DOCK_SUCCESS_PREFIXES = frozenset(_SUCCESS_PREFIXES | {"Stopped"})
 
-# ARCL Status values that indicate failure
+# ARCL Status values that indicate failure. ARAM refuses a goal it cannot
+# plan (a point inside a forbidden area, 2026-10-08) with the Status line
+# "Error: Failed going to goal"; the "Failed to get to <point>" wording only
+# shows in ExtendedStatusForHumans. Without "Error:" here the wait ran to its
+# 300 s timeout on a goal the robot had already given up on.
 _FAILURE_PREFIXES = frozenset(
     {
         "Failed to get to",
         "Failed going to",
+        "Error:",
     }
 )
 

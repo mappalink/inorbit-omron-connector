@@ -380,3 +380,42 @@ class TestCartesianToRanges:
         # Should be at 0° in robot-local frame (straight ahead), 1.0m
         mid = self._angle_to_bin(0, -math.pi, math.pi, 360)
         assert ranges[mid] == pytest.approx(1.0, abs=0.01)
+
+
+class TestStatusTextCleanup:
+    def test_first_segment_only(self):
+        from inorbit_omron_connector.src.connector import _clean_status_text
+
+        raw = (
+            "Failed to get to point 6200 11099 -179|Buffering: Failed going to "
+            "warehouse3|Failed going to goal"
+        )
+        assert _clean_status_text(raw) == "Failed to get to point 6200 11099 -179"
+
+    def test_plain_text_is_unchanged(self):
+        from inorbit_omron_connector.src.connector import _clean_status_text
+
+        assert _clean_status_text("Going to warehouse1") == "Going to warehouse1"
+        assert _clean_status_text(" Stopped ") == "Stopped"
+
+
+class TestExecutorBusy:
+    @pytest.mark.asyncio
+    async def test_busy_follows_the_worker_pool_db(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from inorbit_omron_connector.src.mission_exec import OmronMissionExecutor
+
+        executor = OmronMissionExecutor.__new__(OmronMissionExecutor)
+        executor._robot_id = "omron-hd1500"
+        executor._worker_pool = None
+        assert await executor.is_busy() is False
+
+        pool = MagicMock()
+        pool._db = MagicMock()
+        pool._db.fetch_robot_active_mission = AsyncMock(return_value="mission-1")
+        executor._worker_pool = pool
+        assert await executor.is_busy() is True
+
+        pool._db.fetch_robot_active_mission = AsyncMock(return_value=None)
+        assert await executor.is_busy() is False

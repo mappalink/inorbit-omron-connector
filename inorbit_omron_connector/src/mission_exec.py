@@ -169,6 +169,15 @@ class OmronMissionExecutor:
             await self._worker_pool.shutdown()
             logger.info("Omron Mission Executor shut down")
 
+    async def is_busy(self) -> bool:
+        """True while the worker pool has an unfinished mission for this robot."""
+        if self._worker_pool is None:
+            return False
+        db = getattr(self._worker_pool, "_db", None)
+        if db is None:
+            return False
+        return await db.fetch_robot_active_mission(self._robot_id) is not None
+
     async def handle_command(self, script_name: str, script_args: dict, options: dict) -> bool:
         """Route mission commands. Returns True if handled, False otherwise."""
         if not self._initialized:

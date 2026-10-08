@@ -321,6 +321,16 @@ class TestDockCompletionStatus:
             await node._execute()
 
     @pytest.mark.asyncio
+    async def test_error_status_fails_the_wait_at_once(self, mock_arcl_client):
+        """2026-10-08: a gotopoint into a forbidden area got Status
+        'Error: Failed going to goal' after 29 s; the wait ran on to its
+        300 s timeout because only the 'Failed ...' wordings were failures."""
+        mock_arcl_client.cached_status = {"Status": "Error: Failed going to goal"}
+        node = self._node(mock_arcl_client)
+        with pytest.raises(RuntimeError, match="ARCL task failed: Error: Failed going to goal"):
+            await node._execute()
+
+    @pytest.mark.asyncio
     async def test_dock_failure_still_fails(self, mock_arcl_client):
         from inorbit_omron_connector.src.mission.behavior_tree import (
             _DOCK_SUCCESS_PREFIXES,

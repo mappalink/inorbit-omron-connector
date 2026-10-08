@@ -107,6 +107,16 @@ _PLC_POLL_TIMEOUT = 3.0
 _PLC_START_TIMEOUT = 10.0
 
 
+def _clean_status_text(text: str) -> str:
+    """The first segment of ExtendedStatusForHumans.
+
+    ARAM appends buffered earlier lines after "|" ("Failed to get to point
+    ...|Buffering: Failed going to warehouse3|Failed going to goal",
+    2026-10-08); only the first segment is the current state.
+    """
+    return str(text).split("|", 1)[0].strip()
+
+
 def _to_snake_case(name: str) -> str:
     """Convert CamelCase to snake_case for unmapped ARCL fields."""
     return re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", name).lower()
@@ -276,11 +286,12 @@ class OmronArclConnector(Connector):
             logger.warning("ARCL not connected, skipping telemetry cycle")
             return
 
-        # Re-enable native goal tracking when edge executor is idle
-        if not self._goal_tracker_enabled:
-            executor_idle = self._get_session().missions_module.executor.wait_until_idle(0)
-            if executor_idle:
-                self._goal_tracker_enabled = True
+        # Native goal tracking only while no edge mission runs: the executor
+        # reports its own steps, and the tracker would list the same drive a
+        # second time (seen 2026-10-08: "Go to point 6200 11099 -179" next to
+        # the edge mission). The SDK's cloud executor is always idle in edge
+        # mode, so the worker pool's own bookkeeping is what counts here.
+        self._goal_tracker_enabled = not await self._mission_executor.is_busy()
 
         # Register lasers on first loop (session is available now)
         if self._laser_names and not self._lasers_registered:
@@ -336,7 +347,9 @@ class OmronArclConnector(Connector):
             if arcl_key in _SKIP_FIELDS:
                 continue
             inorbit_key = _ARCL_STATUS_MAP.get(arcl_key, _to_snake_case(arcl_key))
-            if inorbit_key in _NUMERIC_FIELDS:
+            if inorbit_key == "omron_status_text":
+                kv[inorbit_key] = _clean_status_text(value)
+            elif inorbit_key in _NUMERIC_FIELDS:
                 try:
                     kv[inorbit_key] = float(value)
                 except (ValueError, TypeError):
