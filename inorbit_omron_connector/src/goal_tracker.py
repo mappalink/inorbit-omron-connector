@@ -21,6 +21,8 @@ _GOAL_ACTIVE_PREFIXES = ("Going to ", "Driving to ")
 _MACRO_ACTIVE_PREFIX = "Executing macro "
 _MACRO_DONE_PREFIX = "Completed macro "
 
+_ARRIVED_PREFIX = "Arrived at"
+
 # ARCL Status values that indicate an idle/arrived state
 _IDLE_STATUSES = frozenset(
     {
@@ -76,6 +78,8 @@ class GoalTracker:
         self._last_reported: dict | None = None
         # After a stop, the next status may still show the stopped goal
         self._ignore_stale_active: bool = False
+        # The connector paused the robot (block driving) during this goal
+        self._paused_by_us: bool = False
 
     @property
     def is_active(self) -> bool:
@@ -94,7 +98,17 @@ class GoalTracker:
         self._initial_distance = None
         self._last_reported = None
         self._ignore_stale_active = False
+        self._paused_by_us = False
         logger.info("%s tracking started: %s (id=%s)", kind.capitalize(), label, self._mission_id)
+
+    def on_pause(self) -> None:
+        """Call when the connector blocks driving (pause) during a goal.
+
+        The pause shows as ``Stopped``, like an E-stop or a stop from
+        MobilePlanner; this flag is what tells the two apart when the goal ends.
+        """
+        if self.is_active:
+            self._paused_by_us = True
 
     def on_stop(self) -> dict | None:
         """Call when a stop command is sent during navigation. Returns abort payload."""
@@ -171,11 +185,18 @@ class GoalTracker:
                 return None  # still the status from before the command
             return self._finish(failed=True, distance_mm=distance_mm)
 
-        # Check for completion
+        # Check for completion. A goal is Done when the robot arrived, or when
+        # it stopped because this connector paused it (decided 2026-09-30: the
+        # resume re-sends the goal as a new mission). A stop the connector did
+        # not cause (E-stop, MobilePlanner, ARAM giving up) leaves the goal
+        # unreached and is Aborted (seen 2026-10-08: an E-stop 39 cm short of
+        # warehouse1 was reported Done).
         failed = omron_status.startswith(_FAILED_PREFIXES)
+        arrived = has_arrived or omron_status.startswith(_ARRIVED_PREFIX)
         idle = any(omron_status.startswith(s) for s in _IDLE_STATUSES)
-        if not navigating and (has_arrived or failed or idle):
-            return self._finish(failed=failed, distance_mm=distance_mm)
+        if not navigating and (arrived or failed or idle):
+            unreached = not arrived and not self._paused_by_us
+            return self._finish(failed=failed or unreached, distance_mm=distance_mm)
 
         # Still navigating — report progress
         completed = 0.0
