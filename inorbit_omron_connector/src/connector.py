@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import logging
 import math
+import time
 import re
 from pathlib import Path
 from typing import override
@@ -30,6 +31,11 @@ from .mission_exec import OmronMissionExecutor
 from .plc_client import PlcError, TablePlc, declare_client_ams_net_id
 
 logger = logging.getLogger(__name__)
+
+# How often an offline robot is reported offline to InOrbit again. The edge SDK
+# publishes a retained "online" status on every MQTT (re)connect, which would
+# otherwise undo the offline report.
+OFFLINE_REASSERT_SECS = 30.0
 
 # Block driving name used for pause/resume
 BLOCK_NAME = "InOrbit"
@@ -194,6 +200,18 @@ class OmronArclConnector(Connector):
         self._laser_range_max = cfg.laser_range_max
         self._laser_n_points = cfg.laser_n_points
         self._lasers_registered = False
+
+        # Robot liveness, see _execution_loop / _report_online_status.
+        self._liveness_timeout = cfg.liveness_timeout
+        # Time of the last non-empty ARCL status reply (or of the first cycle
+        # without one, so a robot that never answers times out too).
+        self._last_status_at: float | None = None
+        # None until ARCL has answered once.
+        self._robot_online: bool | None = None
+        # Status last reported to InOrbit; None means the SDK's own "online"
+        # sent at session connect.
+        self._reported_online: bool | None = None
+        self._offline_reasserted_at: float | None = None
         self._goal_tracker = GoalTracker()
         self._goal_tracker_enabled = True
         # Last navigation command for pause/resume — ARCL block driving
@@ -284,6 +302,7 @@ class OmronArclConnector(Connector):
 
         if not self._arcl.is_connected():
             logger.warning("ARCL not connected, skipping telemetry cycle")
+            self._note_no_status()
             return
 
         # Native goal tracking only while no edge mission runs: the executor
@@ -314,10 +333,16 @@ class OmronArclConnector(Connector):
             status = await self._arcl.query_status()
         except Exception as e:
             logger.error("ARCL status query failed: %s", e)
-            return
+            status = {}
 
         if not status:
+            # A silent socket answers the 1 s status window with nothing.
+            self._note_no_status()
             return
+
+        self._last_status_at = time.monotonic()
+        self._robot_online = True
+        self._report_online_status()
 
         # Parse location: "x y theta" in mm mm degrees
         location_str = status.get("Location", "")
@@ -384,6 +409,61 @@ class OmronArclConnector(Connector):
         # Query laser scans and publish to InOrbit (they are placed at the pose)
         if self._laser_names and have_pose:
             await self._publish_lasers(x_mm, y_mm, x_m, y_m, yaw_rad)
+
+    # -- Online status -----------------------------------------------------
+
+    def _note_no_status(self) -> None:
+        """No usable ARCL status this cycle: keep the last known state for
+        ``liveness_timeout`` seconds, then report the robot offline."""
+        now = time.monotonic()
+        if self._last_status_at is None:
+            self._last_status_at = now
+        if now - self._last_status_at > self._liveness_timeout:
+            self._robot_online = False
+        self._report_online_status()
+
+    @override
+    def _is_robot_online(self) -> bool:
+        """Answer InOrbit's online-status query (get_state) from ARCL liveness."""
+        return self._robot_online is not False
+
+    def _report_online_status(self) -> None:
+        """Push the robot's online/offline status to InOrbit when it changes.
+
+        The edge SDK publishes a retained "online" status whenever the session
+        connects, and InOrbit only consults ``_is_robot_online`` (via
+        ``get_state``) once it already believes the robot is offline. A robot
+        whose ARCL link is down would therefore stay online in InOrbit for
+        ever, so the connector reports the change itself, the way the SDK does
+        on disconnect. The offline status is re-sent every
+        ``OFFLINE_REASSERT_SECS`` because the SDK reports "online" again on
+        every MQTT reconnect.
+        """
+        online = self._robot_online
+        if online is None:
+            return
+        now = time.monotonic()
+        reported = True if self._reported_online is None else self._reported_online
+        if online != reported:
+            due = True
+        elif not online:
+            last = now if self._offline_reasserted_at is None else self._offline_reasserted_at
+            due = now - last >= OFFLINE_REASSERT_SECS
+        else:
+            due = False
+        if not due:
+            return
+
+        try:
+            self._get_session()._send_robot_status(online=online)
+        except Exception as exc:
+            logger.warning("Could not report online=%s to InOrbit: %s", online, exc)
+            return
+
+        if online != reported:
+            logger.info("Reported %s to InOrbit", "online" if online else "offline")
+        self._reported_online = online
+        self._offline_reasserted_at = None if online else now
 
     async def _publish_plc_telemetry(self) -> None:
         """Publish per-table PLC state as key-values (plc_<table>_*).

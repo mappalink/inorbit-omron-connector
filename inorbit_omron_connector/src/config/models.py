@@ -6,7 +6,7 @@
 
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from inorbit_connector.models import InorbitConnectorConfig
 
@@ -36,6 +36,9 @@ class OmronArclConnectorConfig(BaseSettings):
     arcl_password: str  # ARCL password
     arcl_timeout: int = 10  # Connection timeout (seconds)
     arcl_reconnect_interval: int = 5  # Reconnect delay (seconds)
+    # Seconds without a successful ARCL status reply (connection down, silent
+    # socket, failed query) after which the robot is reported offline to InOrbit.
+    liveness_timeout: float = Field(60.0, gt=0)
     map_id: str = "map"  # InOrbit map frame ID
     map_file: Optional[str] = None  # Path to map PNG on disk
     map_resolution: float = 0.05  # Meters per pixel

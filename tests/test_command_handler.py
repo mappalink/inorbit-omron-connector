@@ -53,6 +53,12 @@ def connector():
         mock_mission_executor.handle_command = AsyncMock(return_value=False)
         instance._mission_executor = mock_mission_executor
         instance._goal_tracker_enabled = True
+        # Liveness state (see test_liveness.py for its behaviour)
+        instance._liveness_timeout = 60.0
+        instance._last_status_at = None
+        instance._robot_online = None
+        instance._reported_online = None
+        instance._offline_reasserted_at = None
         instance._last_nav_goal = None
         instance._last_nav_point = None
         instance._active_macro = None
